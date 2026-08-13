@@ -1,4 +1,5 @@
 from app.models.academic import (
+    MAJOR_ROLES,
     SEMESTERS_PER_YEAR,
     TOTAL_SEMESTERS,
     Alumnus,
@@ -7,13 +8,17 @@ from app.models.academic import (
     Milestone,
     Pivot,
     PrecomputeRun,
+    ProgramRole,
+    Provenance,
     Student,
     StudentCourse,
+    StudentProgram,
     StudentYear,
     semester_label,
 )
 
 __all__ = [
+    "MAJOR_ROLES",
     "SEMESTERS_PER_YEAR",
     "TOTAL_SEMESTERS",
     "Alumnus",
@@ -22,8 +27,11 @@ __all__ = [
     "Milestone",
     "Pivot",
     "PrecomputeRun",
+    "ProgramRole",
+    "Provenance",
     "Student",
     "StudentCourse",
+    "StudentProgram",
     "StudentYear",
     "semester_label",
 ]

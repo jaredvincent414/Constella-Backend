@@ -28,6 +28,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from app.config import settings
+from app.matching.programs import (
+    all_minors,
+    origin_majors,
+    student_majors,
+    student_minors,
+)
+from app.matching.programs import (
+    final_majors as final_major_set,
+)
 from app.matching.text import (
     best_text_similarity,
     jaccard,
@@ -88,6 +98,22 @@ class StudentProfile:
     interests: list[str]
     course_codes: list[str]
     course_names: dict[str, str]
+    # A student's majors/minors are always sets — size 1 in the placeholder data,
+    # but the scorer must never assume that. `declared_major` above is a
+    # convenience scalar (the primary) and a fallback when no program rows exist.
+    current_majors: set[str] = field(default_factory=set)
+    current_minors: set[str] = field(default_factory=set)
+
+    @property
+    def major_set(self) -> set[str]:
+        """Current majors as a set — never a bare string, even for one major."""
+        if self.current_majors:
+            return set(self.current_majors)
+        return {self.declared_major} if self.declared_major else set()
+
+    @property
+    def minor_set(self) -> set[str]:
+        return set(self.current_minors)
 
     @classmethod
     def from_model(cls, student: Student) -> StudentProfile:
@@ -106,6 +132,8 @@ class StudentProfile:
             interests=list(student.interests or []),
             course_codes=codes,
             course_names=names,
+            current_majors=student_majors(student),
+            current_minors=student_minors(student),
         )
 
 
@@ -128,27 +156,57 @@ def pivot_year_alignment(student_year_index: int, alumnus: Alumnus) -> float:
     return max(0.0, 1.0 - distance / MAX_YEAR_DISTANCE)
 
 
+def soft_jaccard(left: set[str], right: set[str]) -> float:
+    """Weighted Jaccard over two program sets, using fuzzy name similarity as the
+    element kernel rather than exact equality.
+
+    For singletons this reduces exactly to `text_similarity`, so a single-major
+    student's score is unchanged from the pre-set-based formula. For larger sets
+    it rewards partial overlap: CS+Art vs CS-only lands strictly between 0 and 1
+    (the shared major matches, the unshared one doesn't), never collapsing to
+    equality's 0-or-1.
+    """
+    if not left or not right:
+        return 0.0
+    left_best = sum(max(text_similarity(a, b) for b in right) for a in left)
+    right_best = sum(max(text_similarity(b, a) for a in left) for b in right)
+    return (left_best + right_best) / (len(left) + len(right))
+
+
 def major_match(profile: StudentProfile, alumnus: Alumnus) -> float:
     """Agreement on both ends of the pivot: where they started, where they landed.
 
-    Each side is worth half. A side the student left unspecified scores neutral
-    rather than zero — an undeclared freshman shouldn't be penalized for being
-    undeclared.
+    Set-based throughout — a student or alumnus may hold several majors, and
+    minors contribute at a reduced, configurable weight. Each end of the pivot is
+    worth half; a side the student left unspecified scores neutral rather than
+    zero, so an undeclared freshman isn't penalized for being undeclared.
     """
-    if profile.declared_major:
-        from_score = text_similarity(profile.declared_major, alumnus.origin_major)
+    student_majors = profile.major_set
+    if student_majors:
+        from_score = soft_jaccard(student_majors, origin_majors(alumnus))
     else:
         from_score = UNSPECIFIED_MAJOR_MATCH
 
     if profile.intended_direction:
         # The destination may be phrased as a major ("Public Health") or as a
         # career area ("Health Policy"), so both are valid targets.
-        targets = [*alumnus.final_majors, alumnus.career_area]
+        targets = [*final_major_set(alumnus), alumnus.career_area]
         to_score = best_text_similarity(profile.intended_direction, targets)
     else:
         to_score = UNSPECIFIED_MAJOR_MATCH
 
-    return 0.5 * from_score + 0.5 * to_score
+    major_component = 0.5 * from_score + 0.5 * to_score
+
+    # Minors nudge the score without swinging it. They only participate when both
+    # sides actually have minors, so single-major records are byte-for-byte
+    # unchanged and an alumnus isn't penalized for holding extra minors.
+    student_minors = profile.minor_set
+    alumnus_minors = all_minors(alumnus)
+    if student_minors and alumnus_minors:
+        minor_component = soft_jaccard(student_minors, alumnus_minors)
+        w = settings.minor_match_weight
+        return (major_component + w * minor_component) / (1 + w)
+    return major_component
 
 
 def interest_overlap(profile: StudentProfile, alumnus: Alumnus) -> float:

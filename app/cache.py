@@ -20,7 +20,8 @@ _client: aioredis.Redis | None = None
 
 # Bump when the cached payload shape changes, so stale entries from an older
 # deploy are ignored rather than deserialized into the wrong schema.
-CACHE_VERSION = "v1"
+# v2: alumni carry a structured `programs` list (majors + minors + provenance).
+CACHE_VERSION = "v2"
 
 
 def get_client() -> aioredis.Redis:

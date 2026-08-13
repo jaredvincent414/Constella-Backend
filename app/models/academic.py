@@ -59,6 +59,30 @@ class StudentYear(enum.StrEnum):
         return list(cls)[max(0, min(index, len(list(cls)) - 1))]
 
 
+class ProgramRole(enum.StrEnum):
+    """A program assignment's kind. `primary` + `second_major` are what count as
+    "majors" for matching; `minor`/`concentration` are secondary."""
+
+    primary = "primary"
+    second_major = "second_major"
+    minor = "minor"
+    concentration = "concentration"
+
+
+# The roles that constitute a student's *majors* — the set the similarity engine
+# compares. Defined once here so no caller re-hardcodes the membership.
+MAJOR_ROLES = frozenset({ProgramRole.primary, ProgramRole.second_major})
+
+
+class Provenance(enum.StrEnum):
+    """Where a program row came from. `reported` is from the source of record;
+    `derived` is inferred by us (e.g. a de facto minor) and must be labeled as
+    inferred anywhere it surfaces in the UI."""
+
+    reported = "reported"
+    derived = "derived"
+
+
 def semester_label(semester_index: int) -> str:
     """0 -> 'Freshman Fall', 3 -> 'Sophomore Spring'."""
     year = YEAR_LABELS[min(semester_index // SEMESTERS_PER_YEAR, len(YEAR_LABELS) - 1)]
@@ -74,6 +98,9 @@ class Student(Base):
         Enum(StudentYear, name="student_year", values_callable=lambda e: [m.value for m in e]),
         nullable=False,
     )
+    # DEPRECATED scalar — a student's majors now live in `student_program`
+    # (role='primary'). Kept for one release so the backfill can be verified
+    # before it's dropped; no code reads it (see app/matching/programs.py).
     declared_major: Mapped[str | None] = mapped_column(String(128))
     # The "to" half of a pivot query: where the student wants to end up. Free
     # text so it can hold either a major ("Public Health") or a career area
@@ -89,6 +116,9 @@ class Student(Base):
     )
 
     courses: Mapped[list[StudentCourse]] = relationship(
+        back_populates="student", cascade="all, delete-orphan", lazy="selectin"
+    )
+    programs: Mapped[list[StudentProgram]] = relationship(
         back_populates="student", cascade="all, delete-orphan", lazy="selectin"
     )
 
@@ -112,6 +142,41 @@ class StudentCourse(Base):
 
     __table_args__ = (
         Index("ix_student_courses_student_code", "student_id", "course_code", unique=True),
+    )
+
+
+class StudentProgram(Base):
+    """A program (major/minor) a current student is enrolled in.
+
+    Mirrors `AlumnusMajor` for the query side: one row per program per term, so a
+    double-major current student is two `role='primary'`/`second_major` rows and
+    never a scalar. See `ProgramRole` for the roles.
+    """
+
+    __tablename__ = "student_program"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    term: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    cip6: Mapped[str | None] = mapped_column(String(6))
+    role: Mapped[ProgramRole] = mapped_column(
+        Enum(ProgramRole, name="program_role", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=ProgramRole.primary,
+    )
+    provenance: Mapped[Provenance] = mapped_column(
+        Enum(Provenance, name="provenance", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=Provenance.reported,
+    )
+
+    student: Mapped[Student] = relationship(back_populates="programs")
+
+    __table_args__ = (
+        Index("ix_student_program_unique", "student_id", "term", "name", "role", unique=True),
     )
 
 
@@ -155,22 +220,39 @@ class Alumnus(Base):
         return min(self.pivots, key=lambda p: p.semester_index)
 
     @property
+    def _major_programs(self) -> list[AlumnusMajor]:
+        """Program rows that count as majors (excludes minors/concentrations).
+
+        A transient row's `role` may be None (column defaults apply at flush),
+        so an unset role counts as a primary major rather than vanishing.
+        """
+        return [m for m in self.majors if (m.role or ProgramRole.primary) in MAJOR_ROLES]
+
+    @property
     def origin_major(self) -> str | None:
-        """The major they started in — the 'from' side of a pivot query."""
-        if not self.majors:
+        """The major they started in — the 'from' side of a pivot query.
+
+        Scalar for back-compat; `programs.origin_majors` is the set-valued form.
+        """
+        majors = self._major_programs
+        if not majors:
             return None
-        return min(self.majors, key=lambda m: m.declared_semester).name
+        return min(majors, key=lambda m: m.declared_semester).name
 
     @property
     def final_majors(self) -> list[str]:
-        """What they graduated with. Multiple entries mean a double major."""
-        finals = [m.name for m in self.majors if m.is_final]
+        """What they graduated with. Multiple entries mean a double major.
+
+        Only major-role programs — a minor is never a graduation major.
+        """
+        majors = self._major_programs
+        finals = [m.name for m in majors if m.is_final]
         if finals:
             return finals
-        if not self.majors:
+        if not majors:
             return []
-        last = max(self.majors, key=lambda m: m.declared_semester).declared_semester
-        return [m.name for m in self.majors if m.declared_semester == last]
+        last = max(majors, key=lambda m: m.declared_semester).declared_semester
+        return [m.name for m in majors if m.declared_semester == last]
 
     def pre_pivot_courses(self) -> list[AlumnusCourse]:
         """Courses taken before they changed direction.
@@ -198,6 +280,11 @@ class AlumnusCourse(Base):
     # True when the course was started and abandoned — drives the `[dropped]`
     # pill in the frontend's <AcademicTimeline>.
     dropped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Coarse subject area (e.g. "Engineering: Electrical and Computer"). Nullable
+    # because not every source carries it; the derived-minor job reads it to spot
+    # a concentration of coursework outside a student's declared field.
+    discipline: Mapped[str | None] = mapped_column(String(160))
+    credit_hours: Mapped[float | None] = mapped_column(Float)
 
     alumnus: Mapped[Alumnus] = relationship(back_populates="courses")
 
@@ -207,6 +294,10 @@ class AlumnusCourse(Base):
 
 
 class AlumnusMajor(Base):
+    """A program (major/minor) an alumnus held. `declared_semester` is the term
+    the assignment holds for; multiple minors are simply multiple `role='minor'`
+    rows. Never a scalar on the alumnus."""
+
     __tablename__ = "alumnus_majors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -214,10 +305,34 @@ class AlumnusMajor(Base):
         ForeignKey("alumni.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # 6-digit CIP code when the source provides one (registrar data will).
+    # MIDFIELD stores names, so this stays null there and the name is the key.
+    cip6: Mapped[str | None] = mapped_column(String(6))
     declared_semester: Mapped[int] = mapped_column(Integer, nullable=False)
     is_final: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    role: Mapped[ProgramRole] = mapped_column(
+        Enum(ProgramRole, name="program_role", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=ProgramRole.primary,
+    )
+    provenance: Mapped[Provenance] = mapped_column(
+        Enum(Provenance, name="provenance", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=Provenance.reported,
+    )
 
     alumnus: Mapped[Alumnus] = relationship(back_populates="majors")
+
+    __table_args__ = (
+        Index(
+            "ix_alumnus_majors_unique",
+            "alumnus_id",
+            "declared_semester",
+            "name",
+            "role",
+            unique=True,
+        ),
+    )
 
 
 class Pivot(Base):

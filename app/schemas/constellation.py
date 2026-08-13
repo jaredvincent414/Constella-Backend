@@ -47,12 +47,25 @@ class OutcomeOut(CamelModel):
     org: str
 
 
+class ProgramOut(CamelModel):
+    """A major or minor with its provenance. `provenance='derived'` marks a
+    program we inferred (e.g. a de facto minor) — the UI must label it inferred,
+    never as formally declared."""
+
+    code: str
+    role: str = Field(description="'major' | 'minor'")
+    provenance: str = Field(description="'reported' | 'derived'")
+
+
 class AlumnusOut(CamelModel):
     id: str
     cluster_id: str
     similarity: float = Field(ge=0.0, le=1.0, description="Drives node size on the frontend")
     class_year: int
+    # Graduation major names, unchanged. `programs` carries the full picture —
+    # multiple majors, minors, and provenance — for clients that want it.
     majors: list[str]
+    programs: list[ProgramOut] = Field(default_factory=list)
     outcome: OutcomeOut
 
 
@@ -116,6 +129,7 @@ class AlumnusDetail(CamelModel):
     class_year: int
     similarity: float
     majors: list[str]
+    programs: list[ProgramOut] = Field(default_factory=list)
     outcome: OutcomeOut
     interests: list[str]
     semesters: list[TimelineSemester]
@@ -141,6 +155,10 @@ class SimulationMatch(CamelModel):
     pivot_semester: str | None
     pivot_from: str | None
     pivot_to: str | None
+    # How the major set changed at the pivot: 'added' (kept the first major and
+    # gained another), 'dropped', or 'switched' (replaced). Lets the What-If UI
+    # distinguish "added a minor" from "switched majors".
+    pivot_type: str | None = None
 
 
 class SimulationResponse(CamelModel):

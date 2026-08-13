@@ -53,6 +53,7 @@ async def get_constellation(
     profile = StudentProfile.from_model(student)
     if from_major:
         profile.declared_major = from_major
+        profile.current_majors = {from_major}
     if to_major:
         profile.intended_direction = to_major
 

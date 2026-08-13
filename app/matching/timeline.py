@@ -19,12 +19,14 @@ courses fall back to `kept`.
 
 from __future__ import annotations
 
+from app.matching.programs import program_views
 from app.matching.scoring import ScoredAlumnus, StudentProfile
 from app.matching.text import normalize_course_code
 from app.models import TOTAL_SEMESTERS, Alumnus, semester_label
 from app.schemas import (
     AlumnusDetail,
     OutcomeOut,
+    ProgramOut,
     ScoreBreakdown,
     TimelineCourse,
     TimelineSemester,
@@ -109,6 +111,10 @@ def build_detail(
         class_year=alumnus.graduation_year,
         similarity=scored.total if scored else 0.0,
         majors=alumnus.final_majors,
+        programs=[
+            ProgramOut(code=p.code, role=p.role, provenance=p.provenance)
+            for p in program_views(alumnus)
+        ],
         outcome=OutcomeOut(title=alumnus.outcome_title, org=alumnus.outcome_org),
         interests=list(alumnus.interests or []),
         semesters=build_semesters(alumnus, profile),

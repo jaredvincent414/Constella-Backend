@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import repository
 from app.config import settings
 from app.db import get_session
-from app.matching import StudentProfile, build_detail, filter_by_pivot_query, score_corpus
+from app.matching import (
+    StudentProfile,
+    build_detail,
+    detect_pivots,
+    filter_by_pivot_query,
+    score_corpus,
+)
 from app.models import StudentYear, semester_label
 from app.schemas import (
     SimulationMatch,
@@ -36,8 +42,10 @@ async def simulate(
     profile = StudentProfile.from_model(student)
     from_major = request.from_major or profile.declared_major
     # Override the profile so the 20% major-match component scores against the
-    # hypothetical pivot rather than the student's saved intent.
+    # hypothetical pivot rather than the student's saved intent. The major set is
+    # replaced wholesale — this is a "what if I were starting from X" query.
     profile.declared_major = from_major
+    profile.current_majors = {from_major} if from_major else set()
     profile.intended_direction = request.to_major
 
     alumni = await repository.list_alumni(session)
@@ -49,12 +57,23 @@ async def simulate(
     matches: list[SimulationMatch] = []
     for item in scored[:top_n]:
         pivot = item.alumnus.first_pivot
+        # Set-diff pivot type (added/dropped/switched) from the program timeline;
+        # matched to the stored pivot's term when there is one.
+        changes = detect_pivots(item.alumnus)
+        if pivot is not None:
+            change = next(
+                (c for c in changes if c.role == "major" and c.term == pivot.semester_index),
+                next((c for c in changes if c.role == "major"), None),
+            )
+        else:
+            change = next((c for c in changes if c.role == "major"), None)
         matches.append(
             SimulationMatch(
                 alumnus=build_detail(item, item.alumnus, profile),
                 pivot_semester=semester_label(pivot.semester_index) if pivot else None,
                 pivot_from=pivot.from_major if pivot else None,
                 pivot_to=pivot.to_major if pivot else None,
+                pivot_type=change.kind if change else None,
             )
         )
 

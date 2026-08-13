@@ -22,11 +22,41 @@ class Settings(BaseSettings):
     edge_min_weight: float = 0.25
     edge_max_count: int = 12
 
+    # --- Major/minor matching --------------------------------------------
+    # How much a shared minor counts relative to a shared major in the 20%
+    # major-match component. A shared minor should nudge the score, not swing it,
+    # so this is well below 1.0. Never hardcoded at the call site.
+    minor_match_weight: float = 0.35
+
+    # --- Derived minors (placeholder data only) --------------------------
+    # A concentration of coursework outside a student's declared field becomes a
+    # de facto (inferred) minor. Either threshold qualifies.
+    derived_minor_min_courses: int = 4
+    derived_minor_min_credits: float = 12.0
+
     # Comma-separated rather than a list field: pydantic-settings tries to
     # JSON-decode complex types from env vars, which makes plain CSV fail.
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
     log_level: str = "INFO"
+
+    # --- Data ingestion --------------------------------------------------
+    # Which source adapter feeds the corpus. "midfield" is the practice dataset;
+    # swap this for a real registrar adapter once school data arrives (see
+    # app/ingest/README.md). The rest of the app never learns which source ran —
+    # it only reads the ORM tables the loader populated.
+    data_source: str = "midfield"
+    # Directory holding the source's files. For MIDFIELD this is the folder with
+    # student/term/course/degree in .parquet or .csv form.
+    data_path: str = "/Users/vinnie/Desktop/midfielddata/export"
+    # 0 = load every alumnus. A cap keeps a validation load fast; the full
+    # MIDFIELD corpus is ~50k degree-earners.
+    ingest_alumni_limit: int = 1500
+    # Synthetic "current students" derived from real pre-pivot transcripts, so
+    # the matching pipeline has something to score against out of the box. Real
+    # current-student profiles come from the app, not from this dataset.
+    ingest_student_count: int = 30
+    ingest_seed: int = 42
 
     @property
     def cors_origin_list(self) -> list[str]:

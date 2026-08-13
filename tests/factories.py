@@ -7,7 +7,15 @@ these construct unsaved instances and the tests run without Postgres.
 from __future__ import annotations
 
 from app.matching import StudentProfile
-from app.models import Alumnus, AlumnusCourse, AlumnusMajor, Milestone, Pivot
+from app.models import (
+    Alumnus,
+    AlumnusCourse,
+    AlumnusMajor,
+    Milestone,
+    Pivot,
+    ProgramRole,
+    Provenance,
+)
 
 
 def make_profile(
@@ -43,6 +51,9 @@ def make_alumnus(
     courses: list[tuple[str, str, int]] | None = None,
     interests: list[str] | None = None,
     dropped: list[tuple[str, str, int]] | None = None,
+    second_majors: list[tuple[str, int]] | None = None,
+    minors: list[tuple[str, int]] | None = None,
+    minor_provenance: str = "reported",
 ) -> Alumnus:
     alumnus = Alumnus(
         id=alumnus_id,
@@ -64,7 +75,13 @@ def make_alumnus(
         )
 
     alumnus.majors.append(
-        AlumnusMajor(name=origin_major, declared_semester=1, is_final=final_major is None)
+        AlumnusMajor(
+            name=origin_major,
+            declared_semester=1,
+            is_final=final_major is None,
+            role=ProgramRole.primary,
+            provenance=Provenance.reported,
+        )
     )
     if final_major is not None:
         alumnus.majors.append(
@@ -72,6 +89,28 @@ def make_alumnus(
                 name=final_major,
                 declared_semester=pivot_semester if pivot_semester is not None else 4,
                 is_final=True,
+                role=ProgramRole.primary,
+                provenance=Provenance.reported,
+            )
+        )
+    for name, declared in second_majors or []:
+        alumnus.majors.append(
+            AlumnusMajor(
+                name=name,
+                declared_semester=declared,
+                is_final=True,
+                role=ProgramRole.second_major,
+                provenance=Provenance.reported,
+            )
+        )
+    for name, declared in minors or []:
+        alumnus.majors.append(
+            AlumnusMajor(
+                name=name,
+                declared_semester=declared,
+                is_final=True,
+                role=ProgramRole.minor,
+                provenance=Provenance(minor_provenance),
             )
         )
     if pivot_semester is not None:

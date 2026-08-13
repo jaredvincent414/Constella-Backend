@@ -1,0 +1,67 @@
+"""GET /api/constellation — the primary payload behind the constellation map."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app import cache, repository
+from app.config import settings
+from app.db import get_session
+from app.jobs.recompute import query_hash
+from app.matching import StudentProfile, build_constellation, filter_by_pivot_query
+from app.schemas import ConstellationResponse
+
+router = APIRouter(prefix="/api", tags=["constellation"])
+
+
+@router.get("/constellation", response_model=ConstellationResponse, response_model_by_alias=True)
+async def get_constellation(
+    student_id: str = Query(alias="studentId"),
+    to_major: str | None = Query(default=None, alias="toMajor"),
+    from_major: str | None = Query(default=None, alias="fromMajor"),
+    max_alumni: int | None = Query(default=None, alias="maxAlumni", ge=1, le=1000),
+    refresh: bool = Query(default=False, description="Bypass the cache and recompute"),
+    session: AsyncSession = Depends(get_session),
+) -> ConstellationResponse:
+    """Serve a student's constellation, cached.
+
+    On a hit this returns Redis's copy untouched. On a miss it computes inline
+    and backfills the cache, so a cold or unavailable Redis costs latency rather
+    than availability.
+    """
+    limit = max_alumni or settings.constellation_max_alumni
+    key = cache.constellation_key(student_id, query_hash(from_major, to_major, limit))
+
+    if not refresh:
+        try:
+            cached_payload = await cache.get_json(key)
+        except Exception:
+            cached_payload = None  # Redis down — fall through and compute.
+        if cached_payload is not None:
+            cached_payload.setdefault("meta", {})["cached"] = True
+            return ConstellationResponse.model_validate(cached_payload)
+
+    student = await repository.get_student(session, student_id)
+    if student is None:
+        raise HTTPException(status_code=404, detail=f"Student {student_id!r} not found")
+
+    alumni = await repository.list_alumni(session)
+    if to_major:
+        alumni = filter_by_pivot_query(alumni, from_major, to_major)
+
+    profile = StudentProfile.from_model(student)
+    if from_major:
+        profile.declared_major = from_major
+    if to_major:
+        profile.intended_direction = to_major
+
+    response, _ = build_constellation(profile, alumni, max_alumni=limit)
+
+    try:
+        await cache.set_json(key, response.model_dump(by_alias=True))
+        await cache.track_student_key(student_id, key)
+    except Exception:
+        pass  # Caching is an optimization; never fail the request over it.
+
+    return response

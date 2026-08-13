@@ -1,0 +1,71 @@
+"""POST /api/simulate — the What If Simulator.
+
+Same scoring engine as the constellation, narrowed to alumni whose pivot
+actually answers the student's question and cut to the top 5.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app import repository
+from app.config import settings
+from app.db import get_session
+from app.matching import StudentProfile, build_detail, filter_by_pivot_query, score_corpus
+from app.models import StudentYear, semester_label
+from app.schemas import (
+    SimulationMatch,
+    SimulationRequest,
+    SimulationResponse,
+    StudentContext,
+)
+
+router = APIRouter(prefix="/api", tags=["simulator"])
+
+
+@router.post("/simulate", response_model=SimulationResponse, response_model_by_alias=True)
+async def simulate(
+    request: SimulationRequest,
+    session: AsyncSession = Depends(get_session),
+) -> SimulationResponse:
+    student = await repository.get_student(session, request.student_id)
+    if student is None:
+        raise HTTPException(status_code=404, detail=f"Student {request.student_id!r} not found")
+
+    profile = StudentProfile.from_model(student)
+    from_major = request.from_major or profile.declared_major
+    # Override the profile so the 20% major-match component scores against the
+    # hypothetical pivot rather than the student's saved intent.
+    profile.declared_major = from_major
+    profile.intended_direction = request.to_major
+
+    alumni = await repository.list_alumni(session)
+    candidates = filter_by_pivot_query(alumni, from_major, request.to_major)
+
+    scored = score_corpus(profile, candidates)
+    top_n = request.top_n or settings.simulator_top_n
+
+    matches: list[SimulationMatch] = []
+    for item in scored[:top_n]:
+        pivot = item.alumnus.first_pivot
+        matches.append(
+            SimulationMatch(
+                alumnus=build_detail(item, item.alumnus, profile),
+                pivot_semester=semester_label(pivot.semester_index) if pivot else None,
+                pivot_from=pivot.from_major if pivot else None,
+                pivot_to=pivot.to_major if pivot else None,
+            )
+        )
+
+    return SimulationResponse(
+        student=StudentContext(
+            year=StudentYear.from_index(profile.year_index).value,
+            interests=profile.interests,
+            courses=[profile.course_names[c] for c in profile.course_codes],
+        ),
+        from_major=from_major,
+        to_major=request.to_major,
+        matches=matches,
+        total_candidates=len(candidates),
+    )

@@ -11,6 +11,7 @@ from app.models import (
     Alumnus,
     AlumnusCourse,
     AlumnusMajor,
+    CareerOutcome,
     Milestone,
     Pivot,
     ProgramRole,
@@ -54,6 +55,9 @@ def make_alumnus(
     second_majors: list[tuple[str, int]] | None = None,
     minors: list[tuple[str, int]] | None = None,
     minor_provenance: str = "reported",
+    industry: str | None = None,
+    occupation: str = "Analyst",
+    years_post_grad: int = 3,
 ) -> Alumnus:
     alumnus = Alumnus(
         id=alumnus_id,
@@ -119,6 +123,16 @@ def make_alumnus(
                 semester_index=pivot_semester,
                 from_major=origin_major,
                 to_major=final_major or origin_major,
+            )
+        )
+    if industry is not None:
+        alumnus.outcomes.append(
+            CareerOutcome(
+                industry=industry,
+                occupation=occupation,
+                employer_region="Remote",
+                years_post_grad=years_post_grad,
+                provenance=Provenance.synthetic,
             )
         )
     alumnus.milestones.append(Milestone(semester_index=7, text="Graduated"))

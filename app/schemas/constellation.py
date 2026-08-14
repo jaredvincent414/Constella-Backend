@@ -45,6 +45,12 @@ class ClusterOut(CamelModel):
 class OutcomeOut(CamelModel):
     title: str
     org: str
+    # Present once employment data is seeded/loaded. `provenance='synthetic'`
+    # marks placeholder employment the UI must not present as real.
+    industry: str | None = None
+    occupation: str | None = None
+    region: str | None = None
+    provenance: str | None = None
 
 
 class ProgramOut(CamelModel):

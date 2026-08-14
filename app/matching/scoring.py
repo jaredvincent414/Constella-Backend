@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from app.config import settings
+from app.matching.outcomes import outcome_industry
 from app.matching.programs import (
     all_minors,
     origin_majors,
@@ -188,9 +189,10 @@ def major_match(profile: StudentProfile, alumnus: Alumnus) -> float:
         from_score = UNSPECIFIED_MAJOR_MATCH
 
     if profile.intended_direction:
-        # The destination may be phrased as a major ("Public Health") or as a
-        # career area ("Health Policy"), so both are valid targets.
-        targets = [*final_major_set(alumnus), alumnus.career_area]
+        # The destination may be phrased as a major ("Public Health"), the
+        # academic area, or the industry the alumnus landed in ("Healthcare") —
+        # all are valid targets for "where do I want to end up".
+        targets = [*final_major_set(alumnus), alumnus.career_area, outcome_industry(alumnus)]
         to_score = best_text_similarity(profile.intended_direction, targets)
     else:
         to_score = UNSPECIFIED_MAJOR_MATCH
@@ -319,7 +321,7 @@ def filter_by_pivot_query(
 
     matches: list[Alumnus] = []
     for alumnus in alumni:
-        targets = [*alumnus.final_majors, alumnus.career_area]
+        targets = [*alumnus.final_majors, alumnus.career_area, outcome_industry(alumnus)]
         if best_text_similarity(to_major, targets) < threshold:
             continue
         if from_major:

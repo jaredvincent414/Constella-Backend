@@ -23,7 +23,9 @@ class TestConstellationPayload:
             "majors",
             "outcome",
         }
-        assert set(payload["alumni"][0]["outcome"]) == {"title", "org"}
+        # outcome carries title/org plus optional employment fields (industry,
+        # occupation, region, provenance) once outcomes are seeded.
+        assert set(payload["alumni"][0]["outcome"]) >= {"title", "org"}
 
     def test_ships_no_geometry(self):
         """Layout is a view concern; coordinates must never leave the server."""

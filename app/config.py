@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     derived_minor_min_courses: int = 4
     derived_minor_min_credits: float = 12.0
 
+    # --- Create Path (path combining) ------------------------------------
+    # Courses kept per year-stage in a combined path. The frontend's plan view
+    # shows a handful per semester; ranking by cross-path frequency picks them.
+    combine_max_courses_per_stage: int = 4
+
     # Comma-separated rather than a list field: pydantic-settings tries to
     # JSON-decode complex types from env vars, which makes plain CSV fail.
     cors_origins: str = "http://localhost:5173,http://localhost:3000"

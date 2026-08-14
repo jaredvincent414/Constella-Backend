@@ -7,10 +7,11 @@ plain objects in tests without a live Postgres.
 from __future__ import annotations
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Alumnus, PrecomputeRun, Student
+from app.models import Alumnus, PrecomputeRun, SavedPath, Student
 
 
 async def get_student(session: AsyncSession, student_id: str) -> Student | None:
@@ -56,6 +57,65 @@ async def count_alumni(session: AsyncSession) -> int:
     from sqlalchemy import func
 
     return (await session.execute(select(func.count(Alumnus.id)))).scalar_one()
+
+
+async def list_saved_paths(session: AsyncSession, student_id: str) -> list[SavedPath]:
+    stmt = (
+        select(SavedPath)
+        .where(SavedPath.student_id == student_id)
+        .order_by(SavedPath.saved_at.desc(), SavedPath.id.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_saved_paths_by_ids(
+    session: AsyncSession, student_id: str, path_ids: list[int]
+) -> list[SavedPath]:
+    """The student's saved paths for the given ids, in the order requested.
+
+    Scoped to the student so one student can't combine another's bookmarks.
+    Missing/foreign ids are simply dropped from the result.
+    """
+    stmt = select(SavedPath).where(
+        SavedPath.student_id == student_id, SavedPath.id.in_(path_ids)
+    )
+    found = {p.id: p for p in (await session.execute(stmt)).scalars().all()}
+    return [found[pid] for pid in path_ids if pid in found]
+
+
+async def save_path(
+    session: AsyncSession, student_id: str, alumnus_id: str, notes: str | None
+) -> SavedPath:
+    """Bookmark an alumnus for a student. Idempotent on (student, alumnus):
+    a re-save updates the note and returns the existing row rather than erroring."""
+    stmt = (
+        pg_insert(SavedPath)
+        .values(student_id=student_id, alumnus_id=alumnus_id, notes=notes)
+        .on_conflict_do_update(
+            index_elements=["student_id", "alumnus_id"], set_={"notes": notes}
+        )
+        .returning(SavedPath.id)
+    )
+    saved_id = (await session.execute(stmt)).scalar_one()
+    await session.commit()
+    return (
+        await session.execute(select(SavedPath).where(SavedPath.id == saved_id))
+    ).scalar_one()
+
+
+async def delete_saved_path(session: AsyncSession, student_id: str, path_id: int) -> bool:
+    path = (
+        await session.execute(
+            select(SavedPath).where(
+                SavedPath.id == path_id, SavedPath.student_id == student_id
+            )
+        )
+    ).scalar_one_or_none()
+    if path is None:
+        return False
+    await session.delete(path)
+    await session.commit()
+    return True
 
 
 async def record_run(

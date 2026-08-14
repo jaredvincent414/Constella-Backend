@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import cache
-from app.api.routes import admin, alumni, constellation, health, simulate
+from app.api.routes import admin, alumni, constellation, health, paths, simulate
 from app.config import settings
 
 logging.basicConfig(level=settings.log_level)
@@ -49,6 +49,7 @@ app.include_router(health.router)
 app.include_router(constellation.router)
 app.include_router(alumni.router)
 app.include_router(simulate.router)
+app.include_router(paths.router)
 app.include_router(admin.router)
 
 

@@ -9,6 +9,7 @@ latency instead of availability.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -48,6 +49,13 @@ def constellation_key(student_id: str, query_hash: str) -> str:
 
 def timeline_key(alumnus_id: str) -> str:
     return f"constella:{CACHE_VERSION}:timeline:{alumnus_id}"
+
+
+def combined_path_key(student_id: str, alumnus_ids: list[str]) -> str:
+    """Keyed by the student and the *sorted set* of alumni combined, so the same
+    combination always hits the same entry regardless of selection order."""
+    digest = hashlib.sha256("|".join(sorted(set(alumnus_ids))).encode()).hexdigest()[:16]
+    return f"constella:{CACHE_VERSION}:combine:{student_id}:{digest}"
 
 
 def student_index_key(student_id: str) -> str:

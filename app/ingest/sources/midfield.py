@@ -207,6 +207,9 @@ def transform_alumnus(
         graduation_year=_grad_year(primary_term),
         outcome_title=outcome_title,
         outcome_org=institution,
+        # MIDFIELD has no employer, so institution doubles as `outcome_org` here.
+        # The tenant still travels in its own field — see AlumnusRecord.
+        school_name=institution,
         career_area=career_area_for_cip(primary_cip),
         interests=[],
         courses=list(by_code.values()),
@@ -357,6 +360,9 @@ class MidfieldAdapter:
             yield StudentRecord(
                 id=f"mid-student-{alum.id}",
                 year=year,
+                # Stand where they stood, at the school they attended — otherwise
+                # the demo student's own cohort would be invisible to them.
+                school_name=alum.school_name,
                 declared_major=pivot.from_major,
                 intended_direction=None,
                 interests=[],

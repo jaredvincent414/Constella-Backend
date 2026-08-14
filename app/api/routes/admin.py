@@ -1,19 +1,24 @@
 """Operational endpoints for driving the background jobs.
 
 These are the triggers described in the spec's data flow: re-run when new alumni
-data arrives or a student's profile changes. Unauthenticated for local
-development — put them behind auth or an internal-only route before this is
-exposed anywhere real.
+data arrives or a student's profile changes.
+
+The whole router sits behind `require_admin`: a shared `ADMIN_API_KEY` presented
+as `X-Admin-Key` (or a bearer token). With no key configured the surface answers
+503 for everyone — recompute and cache-flush are expensive and destructive
+enough that "unset" has to mean closed, not open. Gating at the router rather
+than per-route means a new endpoint added here is protected by default.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app import cache
+from app.auth import require_admin
 from app.jobs import recompute
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
 @router.post("/recompute")

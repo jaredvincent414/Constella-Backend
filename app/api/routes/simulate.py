@@ -6,10 +6,11 @@ actually answers the student's question and cut to the top 5.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import repository
+from app.auth import current_student
 from app.config import settings
 from app.db import get_session
 from app.matching import (
@@ -19,7 +20,7 @@ from app.matching import (
     filter_by_pivot_query,
     score_corpus,
 )
-from app.models import StudentYear, semester_label
+from app.models import Student, StudentYear, semester_label
 from app.schemas import (
     SimulationMatch,
     SimulationRequest,
@@ -33,12 +34,10 @@ router = APIRouter(prefix="/api", tags=["simulator"])
 @router.post("/simulate", response_model=SimulationResponse, response_model_by_alias=True)
 async def simulate(
     request: SimulationRequest,
+    student: Student = Depends(current_student),
     session: AsyncSession = Depends(get_session),
 ) -> SimulationResponse:
-    student = await repository.get_student(session, request.student_id)
-    if student is None:
-        raise HTTPException(status_code=404, detail=f"Student {request.student_id!r} not found")
-
+    """Run a What If for the authenticated student against their own school."""
     profile = StudentProfile.from_model(student)
     from_major = request.from_major or profile.declared_major
     # Override the profile so the 20% major-match component scores against the
@@ -48,7 +47,7 @@ async def simulate(
     profile.current_majors = {from_major} if from_major else set()
     profile.intended_direction = request.to_major
 
-    alumni = await repository.list_alumni(session)
+    alumni = await repository.list_alumni(session, school_id=student.school_id)
     candidates = filter_by_pivot_query(alumni, from_major, request.to_major)
 
     scored = score_corpus(profile, candidates)

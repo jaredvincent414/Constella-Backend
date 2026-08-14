@@ -148,7 +148,8 @@ class AlumnusDetail(CamelModel):
 
 
 class SimulationRequest(CamelModel):
-    student_id: str
+    # No studentId: the subject is the authenticated caller. Accepting one here
+    # would let anyone simulate — and read timelines — as another student.
     from_major: str | None = Field(
         default=None, description="Defaults to the student's declared major"
     )

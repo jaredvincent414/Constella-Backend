@@ -45,6 +45,11 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # --- Auth ------------------------------------------------------------
+    # Shared key gating /api/admin. Empty (the default) means admin endpoints
+    # are DISABLED rather than open — set ADMIN_API_KEY to enable them.
+    admin_api_key: str = ""
+
     # --- Data ingestion --------------------------------------------------
     # Which source adapter feeds the corpus. "midfield" is the practice dataset;
     # swap this for a real registrar adapter once school data arrives (see

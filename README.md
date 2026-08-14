@@ -161,6 +161,30 @@ too thin to label.
 rules exactly so the API isn't shipping edges that get discarded. Both bounds
 are configurable (`EDGE_MIN_WEIGHT`, `EDGE_MAX_COUNT`).
 
+## Create Path (path combining)
+
+Students bookmark alumni journeys (`saved_paths`), then select 2+ on the Create
+Path page to merge into one "ideal path". `POST /api/paths/combine`:
+
+1. Buckets each path's non-dropped courses into the four year-stages
+   (`semester_index // 2`).
+2. Ranks courses within a stage by **cross-path frequency** — a course several
+   paths share signals consensus — tie-broken by relevance to the student's
+   interests, and capped per stage (`COMBINE_MAX_COURSES_PER_STAGE`).
+3. Returns `confidence` = shared / total-unique courses, the distinct
+   `outcomeFields`, the `sharedCourses`, and a **pre-computed Sankey** (one
+   representative course per path per stage, one link per path per transition
+   plus a link into the outcome node — the frontend just draws beziers).
+
+Results are cached in Redis keyed by the student + the *sorted set* of alumni
+combined, and tracked under the student's index so a profile change invalidates
+them alongside the constellation.
+
+Honest limits on the placeholder data: there's no prerequisite graph, so conflict
+resolution reduces to de-duplicating the same course; and course identity is the
+normalized code, so overlap (and thus `confidence`) only registers within an
+institution — arbitrary cross-institution pairs often share nothing.
+
 ## API
 
 | Method | Path | Purpose |
@@ -168,6 +192,10 @@ are configurable (`EDGE_MIN_WEIGHT`, `EDGE_MAX_COUNT`).
 | `GET` | `/api/constellation?studentId=` | Full constellation payload |
 | `GET` | `/api/alumni/{id}/timeline?studentId=` | Lazily-fetched detail panel |
 | `POST` | `/api/simulate` | What If Simulator — top 5 matches |
+| `GET` | `/api/paths?studentId=` | Student's saved paths, with full timelines |
+| `POST` | `/api/paths` | Bookmark an alumnus path (idempotent) |
+| `DELETE` | `/api/paths/{id}?studentId=` | Remove a saved path |
+| `POST` | `/api/paths/combine` | Merge 2+ saved paths into one plan |
 | `GET` | `/health/ready` | Postgres + Redis status |
 | `POST` | `/api/admin/recompute` | Rebuild all cached constellations |
 | `POST` | `/api/admin/recompute/{studentId}` | Rebuild or invalidate one student |
@@ -211,6 +239,7 @@ app/
     scoring.py       The weighted formula (NumPy-vectorized overlap)
     clustering.py    Career-area grouping and edge pruning
     timeline.py      Semester timeline for the detail panel
+    combine.py       Path combining — merge saved paths + Sankey
     pipeline.py      score → rank → cut → cluster → prune
   jobs/
     recompute.py     Background precompute
@@ -220,9 +249,9 @@ app/
     loader.py        Records → Postgres (the only ORM-facing code)
     cip.py           CIP code → major name / career area
     sources/         midfield.py, template.py, registry
-  api/routes/        constellation, alumni, simulate, admin, health
+  api/routes/        constellation, alumni, simulate, paths, admin, health
 scripts/seed.py      Synthetic corpus generator (fixed RNG seed)
-tests/               58 tests, no database required
+tests/               67 tests, no database required
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so the

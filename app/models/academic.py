@@ -393,3 +393,32 @@ class PrecomputeRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
+
+
+class SavedPath(Base):
+    """A student's bookmark of an alumnus's journey, from Explore/Transition.
+
+    Selecting several of these on the Create Path page feeds the combine
+    endpoint. A student can't save the same alumnus twice (unique constraint);
+    a re-save is idempotent.
+    """
+
+    __tablename__ = "saved_paths"
+
+    # Int PK to match the other link tables (AlumnusCourse, Pivot, …); the spec's
+    # UUID is moot here since students/alumni are keyed by text ids, not UUIDs.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    alumnus_id: Mapped[str] = mapped_column(
+        ForeignKey("alumni.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_saved_paths_student_alumnus", "student_id", "alumnus_id", unique=True),
+    )

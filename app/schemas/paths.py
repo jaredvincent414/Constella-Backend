@@ -16,7 +16,7 @@ from app.schemas.constellation import AlumnusDetail, CamelModel
 
 
 class SavePathRequest(CamelModel):
-    student_id: str
+    # The owner is the authenticated caller — see SimulationRequest.
     alumnus_id: str
     notes: str | None = None
 
@@ -36,7 +36,6 @@ class SavedPathOut(CamelModel):
 
 
 class CombineRequest(CamelModel):
-    student_id: str
     path_ids: list[int] = Field(min_length=2, description="Saved-path ids to merge (2+)")
 
 

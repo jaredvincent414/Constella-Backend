@@ -1,0 +1,167 @@
+# CLAUDE.md
+
+Guidance for Claude Code working in this repository.
+
+## What this is
+
+Constella's backend: a cohort-matching engine. It scores alumni against a
+current student's transcript, clusters them by career outcome, and serves the
+payload the frontend renders as a constellation map. FastAPI + async SQLAlchemy
++ Postgres + Redis.
+
+Read [README.md](README.md) first for the domain model and the scoring formula.
+This file covers what isn't obvious from the code.
+
+## Commands
+
+```bash
+docker compose up -d                      # Postgres on 5433, Redis on 6380
+uv sync --all-groups && source .venv/bin/activate
+alembic upgrade head
+python -m scripts.seed --alumni 240 --reset   # synthetic corpus + dev tokens
+uvicorn app.main:app --reload --port 8000
+```
+
+```bash
+pytest                                    # 130 tests
+pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
+ruff check app scripts tests              # line-length 100
+alembic revision --autogenerate -m "msg"
+```
+
+Real practice data instead of the seed:
+
+```bash
+python -m app.ingest --source midfield --alumni 1500 --reset
+python -m app.jobs.recompute
+```
+
+## Security invariants
+
+These are load-bearing. Changing any of them is a security change, not a
+refactor — say so explicitly in the PR.
+
+1. **No student-facing route accepts a student id.** The subject of every
+   request is the bearer-token holder, resolved by `current_student`
+   ([app/auth.py](app/auth.py)). If you find yourself adding a `studentId`
+   parameter, you are re-opening the hole this design closed: it made reading
+   another student's data a matter of guessing an id. `/me` is the addressing
+   scheme.
+
+2. **Alumni reads are school-scoped.** `repository.list_alumni` and
+   `get_alumnus` take a `school_id`; every request-path caller passes
+   `student.school_id`. A cross-school id must 404 with the same body as a
+   nonexistent one — never 403, and never a different message, because that
+   confirms the record exists.
+
+   The one legitimate unscoped caller is `app/jobs/derive_minors.py`, an offline
+   enrichment job that walks the whole corpus and serves no request.
+
+   Note the sharp edge: `school_id=None` means *unscoped*, not "no matches". So
+   `current_student` refuses to authenticate a student whose `school_id` is null
+   — otherwise a null tenant would fail **open** onto every school's corpus.
+   Keep that check if you rework auth.
+
+3. **The precompute job scopes exactly as the request path does.** A job that
+   scored against all schools would write a cross-tenant constellation into
+   Redis, and the route would serve it on the next cache hit without ever
+   touching the corpus. Isolation has to hold on both sides of the cache.
+
+4. **Tokens are stored only as SHA-256 hashes.** Plaintext is returned once, at
+   registration. Never log a token, never add an endpoint that returns one for
+   an existing student, and never make the hash acceptable as a credential.
+
+5. **`ADMIN_API_KEY` unset means disabled (503), not open.** The admin gate is a
+   router-level dependency on `/api/admin`, so new endpoints added there are
+   protected by default. Keep it that way rather than gating per-route.
+
+6. **A student's school is immutable through the API.** `ProfileUpdate` has no
+   `schoolId` field on purpose.
+
+The security boundary is covered by [tests/test_api_security.py](tests/test_api_security.py)
+(integration, DB-guarded) and [tests/test_auth.py](tests/test_auth.py) (pure
+unit). If you touch auth or scoping, those tests must still pass and probably
+need a new case.
+
+### Known gaps — deliberate, not oversights
+
+Registration is open to anyone naming a valid school (needs invites/SSO in
+front of it); bearer tokens assume TLS; tokens don't expire and there's no
+revocation endpoint; registration isn't rate-limited. These are documented in
+the README's "What this is not". Don't quietly close one halfway — either do it
+properly or leave the honest note.
+
+## Architecture notes
+
+**The pipeline.** `Postgres → background job (score + cluster) → Redis →
+FastAPI`. On a cache miss the API computes inline and backfills, so a cold or
+unavailable Redis costs latency, not availability. Cache writes are always
+wrapped in `try/except` — caching is an optimization and must never fail a
+request.
+
+**The response contains no geometry.** Radius, angle, and coordinates belong to
+the frontend; shipping them would freeze its layout model. A test asserts this.
+
+**Programs are set-valued, never scalar.** A person's majors/minors live in a
+role-tagged join table (`alumnus_majors` / `student_program`), read *only*
+through [app/matching/programs.py](app/matching/programs.py). A test asserts no
+other module touches the program field directly. `Student.declared_major` is a
+deprecated mirror kept for one release — `student_majors()` falls back to it,
+which means a test can pass on the fallback while the join-table write is
+broken. Assert on the table when you touch this.
+
+**Ingestion is source-swappable.** Adapters yield the source-neutral dataclasses
+in `app/ingest/records.py`; `loader.py` is the only ORM-facing code. Nothing
+downstream learns which dataset ran. The tenant travels as
+`AlumnusRecord.school_name` — deliberately *not* read off `outcome_org`, which
+means "employer" the moment a source carries real career data.
+
+**Provenance labeling.** `synthetic` (seeded employment) and `derived` (inferred
+minors) data must surface its provenance anywhere it reaches the UI. MIDFIELD
+has no employment data at all; the career outcomes are a stand-in. Never present
+either as reported fact.
+
+## Conventions
+
+- **camelCase on the wire, snake_case in Python.** All response schemas extend
+  `CamelModel`; routes pass `response_model_by_alias=True`.
+- **Repository, not raw queries in routes.** Relationships are eager-loaded
+  (`selectinload`) because the scorer touches every alumnus's courses, majors,
+  and pivots — lazy loading means thousands of round trips per request.
+- **`get_student` uses `populate_existing`.** Sessions run with
+  `expire_on_commit=False`, so without it a read-after-write returns the
+  collections the instance had *before* the write. This bit twice already.
+- **`semester_index` (0–7) is the source of truth for timing.** Labels like
+  "Sophomore Spring" are derived. Keeps pre-pivot filtering and year alignment
+  as integer comparisons.
+- **Comments explain *why*.** This codebase documents decisions and rejected
+  alternatives, not mechanics. Match that register — don't add comments that
+  restate the line below them.
+- **Alumni have no name column**, by construction. Don't add one.
+
+## Testing
+
+`asyncio_mode = "auto"` with a **session-scoped event loop** — asyncpg binds
+pooled connections to the loop that opened them, so a per-test loop leaves the
+shared engine holding connections to a closed one. If you see
+`RuntimeError: Event loop is closed`, that's the cause.
+
+The matching engine takes plain ORM objects and never touches a session, so
+everything except `test_api_security.py` runs without Postgres. Keep it that
+way: build test fixtures with `tests/factories.py` rather than reaching for the
+database.
+
+DB-backed tests namespace their rows (`test-sec-*`) and clean up after
+themselves, because the suite may run against a development database that has
+real ingested data in it. Don't write a test that truncates a table.
+
+## Gotchas
+
+- **Don't run `scripts/seed.py --reset` casually.** It deletes every student and
+  alumnus. A dev database may hold a MIDFIELD corpus that took a long ingest to
+  build. Schools survive a reset on purpose — students created through the API
+  reference them, and dropping a school cascades those accounts away.
+- **`.env` is the developer's local file.** Edit `.env.example` instead.
+- Migrations form a linear chain; the current head is `e9a4c1f27b30`.
+- Compose maps Postgres to **5433** and Redis to **6380** to avoid colliding
+  with local instances. The defaults in `config.py` match.

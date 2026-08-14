@@ -61,6 +61,11 @@ class AlumnusRecord:
     `career_area` is the clustering axis. When a source has genuine employment
     outcomes it belongs here; MIDFIELD has none, so its adapter fills this with
     the academic discipline of the final degree and says so in `outcome_title`.
+
+    `school_name` is the tenant — the institution that granted the degree. It is
+    deliberately its own field rather than being read off `outcome_org`: that
+    column means *employer* the moment a source carries real career data, and
+    deriving the isolation boundary from it would silently mis-tenant everyone.
     """
 
     id: str
@@ -68,6 +73,8 @@ class AlumnusRecord:
     outcome_title: str
     outcome_org: str
     career_area: str
+    # None falls back to the loader's default school; a real adapter always sets it.
+    school_name: str | None = None
     interests: list[str] = field(default_factory=list)
     courses: list[CourseRecord] = field(default_factory=list)
     majors: list[MajorRecord] = field(default_factory=list)
@@ -81,11 +88,12 @@ class StudentRecord:
 
     `year` is a `StudentYear` value ("freshman".."senior"). `intended_direction`
     is optional: absent means a broad-explore query rather than a targeted
-    What If.
+    What If. `school_name` is the tenant whose alumni this student may see.
     """
 
     id: str
     year: str
+    school_name: str | None = None
     declared_major: str | None = None
     intended_direction: str | None = None
     interests: list[str] = field(default_factory=list)

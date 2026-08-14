@@ -15,6 +15,7 @@ import random
 
 from sqlalchemy import delete
 
+from app.auth import hash_token
 from app.db import SessionLocal
 from app.models import (
     Alumnus,
@@ -22,10 +23,26 @@ from app.models import (
     AlumnusMajor,
     Milestone,
     Pivot,
+    School,
     Student,
     StudentCourse,
     StudentYear,
 )
+
+# Two schools, so the tenant boundary is something you can actually exercise
+# locally: a token from one school must 404 on the other's alumni ids.
+SCHOOLS = [("demo-university", "Demo University"), ("second-college", "Second College")]
+
+# Fixed tokens for the demo students. Predictable *on purpose* — you cannot curl
+# an authenticated endpoint with a token you can't see, and registration only
+# ever shows a token once. Nothing outside this seed script mints tokens this
+# way, and seeding a production database is not a supported operation.
+DEV_TOKENS = {
+    "student-demo": "dev-token-student-demo",
+    "student-undeclared": "dev-token-student-undeclared",
+    "student-junior-cs": "dev-token-student-junior-cs",
+    "student-other-school": "dev-token-student-other-school",
+}
 
 # Courses nearly everyone takes in their first year. These are what make course
 # overlap meaningful across domains — without a shared foundation, a student's
@@ -235,7 +252,7 @@ def pick_courses(
     return rng.sample(pool, min(count, len(pool)))
 
 
-def generate_alumnus(rng: random.Random, index: int) -> Alumnus:
+def generate_alumnus(rng: random.Random, index: int, school_id: str) -> Alumnus:
     origin_domain = rng.choice(DOMAIN_NAMES)
 
     # ~70% pivot. The rest graduate in the direction they started, which the
@@ -261,6 +278,7 @@ def generate_alumnus(rng: random.Random, index: int) -> Alumnus:
 
     alumnus = Alumnus(
         id=f"alum-{index:04d}",
+        school_id=school_id,
         graduation_year=graduation_year,
         outcome_title=title,
         outcome_org=org,
@@ -338,13 +356,20 @@ def generate_alumnus(rng: random.Random, index: int) -> Alumnus:
 
 
 def sample_students() -> list[Student]:
-    """A handful of students spanning the cases the frontend has to render."""
+    """A handful of students spanning the cases the frontend has to render.
+
+    All but the last belong to the first school; `student-other-school` is the
+    control for tenant isolation — its token must not reach any `alum-*` row the
+    others can see.
+    """
     students: list[Student] = []
+    primary, secondary = SCHOOLS[0][0], SCHOOLS[1][0]
 
     # The spec's worked example: a sophomore on a science track considering
     # a move toward health policy.
     sophomore = Student(
         id="student-demo",
+        school_id=primary,
         year=StudentYear.sophomore,
         declared_major="Biochemistry",
         intended_direction="Health Policy",
@@ -365,6 +390,7 @@ def sample_students() -> list[Student]:
     # thin-transcript case the frontend flags as an open question.
     freshman = Student(
         id="student-undeclared",
+        school_id=primary,
         year=StudentYear.freshman,
         declared_major=None,
         intended_direction=None,
@@ -379,6 +405,7 @@ def sample_students() -> list[Student]:
     # A junior deep into a CS track, considering product.
     junior = Student(
         id="student-junior-cs",
+        school_id=primary,
         year=StudentYear.junior,
         declared_major="Computer Science",
         intended_direction="Product Management",
@@ -397,6 +424,25 @@ def sample_students() -> list[Student]:
             )
     students.append(junior)
 
+    # The isolation control: same shape as the demo sophomore, other tenant.
+    other = Student(
+        id="student-other-school",
+        school_id=secondary,
+        year=StudentYear.sophomore,
+        declared_major="Biochemistry",
+        intended_direction="Health Policy",
+        interests=["Global Health Club"],
+    )
+    for code, name in [("BIO 101", "Bio 101"), ("CHEM 101", "Chem 101")]:
+        other.courses.append(
+            StudentCourse(course_code=code, course_name=name, semester_index=0)
+        )
+    students.append(other)
+
+    for student in students:
+        student.email = f"{student.id}@example.edu"
+        student.auth_token_hash = hash_token(DEV_TOKENS[student.id])
+
     return students
 
 
@@ -409,15 +455,31 @@ async def seed(alumni_count: int, seed_value: int, reset: bool) -> None:
             await session.execute(delete(Alumnus))
             await session.commit()
 
+        # Schools are upserted, never deleted on --reset: students created
+        # through the API reference them, and dropping one cascades those away.
+        for school_id, school_name in SCHOOLS:
+            if await session.get(School, school_id) is None:
+                session.add(School(id=school_id, name=school_name))
+        await session.commit()
+
+        # Most of the corpus in the primary school, a slice in the second, so
+        # both a populated constellation and a cross-tenant 404 are reachable.
         for index in range(alumni_count):
-            session.add(generate_alumnus(rng, index))
+            school_id = SCHOOLS[0][0] if index % 5 else SCHOOLS[1][0]
+            session.add(generate_alumnus(rng, index, school_id))
         for student in sample_students():
             session.add(student)
 
         await session.commit()
 
-    print(f"Seeded {alumni_count} alumni and {len(sample_students())} students.")
-    print("Students: student-demo, student-undeclared, student-junior-cs")
+    students = sample_students()
+    print(
+        f"Seeded {alumni_count} alumni across {len(SCHOOLS)} schools "
+        f"and {len(students)} students."
+    )
+    print("Dev bearer tokens (local only):")
+    for student in students:
+        print(f"  {student.id:<24} {student.school_id:<16} {DEV_TOKENS[student.id]}")
 
 
 def main() -> None:

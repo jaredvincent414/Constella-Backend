@@ -46,7 +46,11 @@ async def precompute_student(student_id: str, max_alumni: int | None = None) -> 
         if student is None:
             raise LookupError(f"student {student_id!r} not found")
 
-        alumni = await repository.list_alumni(session)
+        # Scoped exactly as the request path scopes it. A job that scored against
+        # every school would write a cross-tenant constellation into the cache,
+        # and the route would serve it on the next hit without ever touching the
+        # corpus itself — the isolation has to hold on both sides of Redis.
+        alumni = await repository.list_alumni(session, school_id=student.school_id)
         profile = StudentProfile.from_model(student)
         response, _ = build_constellation(profile, alumni, max_alumni=limit)
 

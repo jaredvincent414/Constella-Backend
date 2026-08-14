@@ -92,10 +92,33 @@ def semester_label(semester_index: int) -> str:
     return f"{year} {term}"
 
 
+class School(Base):
+    """A tenant. Students and alumni belong to one; a student only ever sees
+    alumni from their own school. Seeded from the source's institutions."""
+
+    __tablename__ = "schools"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # slug
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Student(Base):
     __tablename__ = "students"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Tenant. Nullable only so the backfill migration can populate it; new
+    # students always get one at registration.
+    school_id: Mapped[str | None] = mapped_column(
+        ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
+    # Identity. `auth_token_hash` is the SHA-256 of the student's bearer token;
+    # the plaintext is shown once at registration and never stored.
+    name: Mapped[str | None] = mapped_column(String(160))
+    email: Mapped[str | None] = mapped_column(String(200), unique=True)
+    auth_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     year: Mapped[StudentYear] = mapped_column(
         Enum(StudentYear, name="student_year", values_callable=lambda e: [m.value for m in e]),
         nullable=False,
@@ -186,6 +209,11 @@ class Alumnus(Base):
     __tablename__ = "alumni"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Tenant — a student only sees alumni from their own school. Nullable only
+    # for the backfill migration; the loader always sets it.
+    school_id: Mapped[str | None] = mapped_column(
+        ForeignKey("schools.id", ondelete="CASCADE"), index=True
+    )
     # Deliberately no name column. The frontend renders "Class of 2022" and
     # never a real name, so the API has nothing to leak.
     graduation_year: Mapped[int] = mapped_column(Integer, nullable=False, index=True)

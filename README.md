@@ -20,7 +20,9 @@ Interactive API docs at http://localhost:8000/docs.
 
 Seeded students: `student-demo` (sophomore, Biochemistry → Health Policy),
 `student-undeclared` (freshman, thin transcript), `student-junior-cs`
-(junior, CS → Product Management).
+(junior, CS → Product Management), and `student-other-school` (the tenant
+isolation control). The seed prints a dev bearer token for each — every
+student-facing route needs one, see [Auth & multi-tenancy](#auth--multi-tenancy).
 
 Instead of the synthetic seed, you can load real practice data from MIDFIELD —
 see [Data ingestion](#data-ingestion).
@@ -203,21 +205,75 @@ resolution reduces to de-duplicating the same course; and course identity is the
 normalized code, so overlap (and thus `confidence`) only registers within an
 institution — arbitrary cross-institution pairs often share nothing.
 
+## Auth & multi-tenancy
+
+Every student-facing route resolves its subject from an opaque bearer token, and
+alumni reads are scoped to the caller's school.
+
+```bash
+# Register, then use the token it returns (shown once).
+curl -s localhost:8000/api/students/schools
+curl -s -X POST localhost:8000/api/students/register \
+  -H 'Content-Type: application/json' \
+  -d '{"schoolId":"demo-university","email":"you@example.edu","year":"sophomore"}'
+
+curl -s localhost:8000/api/constellation -H "Authorization: Bearer $TOKEN"
+```
+
+Three properties are worth stating explicitly, because they're the point:
+
+* **No route takes a student id.** `studentId` is gone from constellation,
+  timeline, simulate, and paths — the subject is always the token holder. Reading
+  another student's data isn't forbidden, it's unexpressible.
+* **A cross-school id 404s** with the same body as an id that doesn't exist.
+  Distinguishing the two would confirm which alumni a school has.
+* **Tokens are stored as SHA-256 hashes.** The plaintext is transmitted once at
+  registration; a database read yields nothing that can be presented as a
+  credential. A lost token can only be reissued, not recovered.
+
+Schools come from the source's institutions (MIDFIELD's Institution B/J become
+`institution-b`, `institution-j`). `python -m scripts.seed` creates two schools
+and prints fixed dev tokens for its sample students, so the boundary is
+exercisable locally: `student-other-school`'s token must 404 on every `alum-*`
+id the others can read.
+
+`ADMIN_API_KEY` gates `/api/admin` as `X-Admin-Key`. **Unset means disabled**
+(503 for everyone), not open.
+
+### What this is not
+
+This is the enforcement boundary, not an identity provider. Before real students
+touch it:
+
+* **Registration is open to anyone naming a valid school.** It needs invite
+  codes, a domain allowlist, or campus SSO in front of it. The token issuance
+  here is the shape an OIDC callback would mint into.
+* **Bearer tokens assume TLS.** They're sent in a header on every request and
+  are as good as the transport.
+* **Tokens never expire and there is no revocation endpoint.** Rotation means
+  issuing a new hash out of band.
+* Registration has no rate limiting, so it's an unmetered write.
+
 ## API
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/constellation?studentId=` | Full constellation payload |
-| `GET` | `/api/alumni/{id}/timeline?studentId=` | Lazily-fetched detail panel |
-| `POST` | `/api/simulate` | What If Simulator — top 5 matches |
-| `GET` | `/api/paths?studentId=` | Student's saved paths, with full timelines |
-| `POST` | `/api/paths` | Bookmark an alumnus path (idempotent) |
-| `DELETE` | `/api/paths/{id}?studentId=` | Remove a saved path |
-| `POST` | `/api/paths/combine` | Merge 2+ saved paths into one plan |
-| `GET` | `/health/ready` | Postgres + Redis status |
-| `POST` | `/api/admin/recompute` | Rebuild all cached constellations |
-| `POST` | `/api/admin/recompute/{studentId}` | Rebuild or invalidate one student |
-| `DELETE` | `/api/admin/cache` | Flush cached constellations |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/students/schools` | — | Schools available at registration |
+| `POST` | `/api/students/register` | — | Create a student, receive a token |
+| `GET` | `/api/students/me` | student | The caller's profile |
+| `PUT` | `/api/students/me` | student | Partial profile update |
+| `PUT` | `/api/students/me/courses` | student | Replace the transcript |
+| `GET` | `/api/constellation` | student | Full constellation payload |
+| `GET` | `/api/alumni/{id}/timeline` | student | Lazily-fetched detail panel |
+| `POST` | `/api/simulate` | student | What If Simulator — top 5 matches |
+| `GET` | `/api/paths` | student | Saved paths, with full timelines |
+| `POST` | `/api/paths` | student | Bookmark an alumnus path (idempotent) |
+| `DELETE` | `/api/paths/{id}` | student | Remove a saved path |
+| `POST` | `/api/paths/combine` | student | Merge 2+ saved paths into one plan |
+| `GET` | `/health/ready` | — | Postgres + Redis status |
+| `POST` | `/api/admin/recompute` | admin | Rebuild all cached constellations |
+| `POST` | `/api/admin/recompute/{studentId}` | admin | Rebuild or invalidate one student |
+| `DELETE` | `/api/admin/cache` | admin | Flush cached constellations |
 
 `GET /api/constellation` also accepts `fromMajor`, `toMajor`, `maxAlumni`, and
 `refresh=true` (bypass cache).
@@ -234,11 +290,8 @@ inferred minor. Simulate matches include a `pivotType` (`added`/`dropped`/
 Timeline course status is resolved relative to the viewing student — `kept` is a
 course you've already taken, `added` is one you haven't, `dropped` is one the
 alumnus abandoned. That framing is what makes the timeline answer "what changes
-if I follow this path" rather than just "what did this person do". Omit
-`studentId` and nothing is `added`.
-
-The admin routes are unauthenticated for local development. Put them behind auth
-before exposing this anywhere real.
+if I follow this path" rather than just "what did this person do". The student is
+the authenticated caller, so the comparison is always present.
 
 ## Layout
 
@@ -268,15 +321,17 @@ app/
     loader.py        Records → Postgres (the only ORM-facing code)
     cip.py           CIP code → major name / career area
     sources/         midfield.py, template.py, registry
-  api/routes/        constellation, alumni, simulate, paths, admin, health
+  auth.py            Bearer tokens, current_student, admin gate
+  api/routes/        students, constellation, alumni, simulate, paths, admin, health
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               76 tests, no database required
+tests/               130 tests; only the security suite needs Postgres
 ```
 
-The matching engine takes plain ORM objects and never touches a session, so the
-whole test suite runs without Postgres.
+The matching engine takes plain ORM objects and never touches a session, so
+everything but `test_api_security.py` runs without Postgres — and that file
+skips cleanly when the database isn't up.
 
 ## Development
 
@@ -293,6 +348,8 @@ collide with anything already running locally.
 
 - Alumni have no name column. The frontend renders "Class of 2022", so the API
   has nothing to leak.
+- A student's school is set at registration and cannot be changed through the
+  API — moving between tenants would hand over another school's corpus.
 - `semester_index` (0–7) is the source of truth for timing; labels like
   "Sophomore Spring" are derived. Pre-pivot filtering and year alignment are
   then integer comparisons rather than string parsing.

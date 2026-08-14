@@ -34,6 +34,7 @@ def _alumni_query():
         selectinload(Alumnus.majors),
         selectinload(Alumnus.pivots),
         selectinload(Alumnus.milestones),
+        selectinload(Alumnus.outcomes),
     )
 
 

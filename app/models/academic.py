@@ -75,12 +75,14 @@ MAJOR_ROLES = frozenset({ProgramRole.primary, ProgramRole.second_major})
 
 
 class Provenance(enum.StrEnum):
-    """Where a program row came from. `reported` is from the source of record;
-    `derived` is inferred by us (e.g. a de facto minor) and must be labeled as
-    inferred anywhere it surfaces in the UI."""
+    """Where a piece of data came from. `reported` is from the source of record;
+    `derived` is inferred by us from other data we hold (e.g. a de facto minor);
+    `synthetic` is fabricated as a placeholder (e.g. seeded employment). Anything
+    not `reported` must be labeled as such anywhere it surfaces in the UI."""
 
     reported = "reported"
     derived = "derived"
+    synthetic = "synthetic"
 
 
 def semester_label(semester_index: int) -> str:
@@ -212,6 +214,16 @@ class Alumnus(Base):
     milestones: Mapped[list[Milestone]] = relationship(
         back_populates="alumnus", cascade="all, delete-orphan", lazy="selectin"
     )
+    outcomes: Mapped[list[CareerOutcome]] = relationship(
+        back_populates="alumnus", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    @property
+    def primary_outcome(self) -> CareerOutcome | None:
+        """The outcome to cluster and display on — the latest snapshot we have."""
+        if not self.outcomes:
+            return None
+        return max(self.outcomes, key=lambda o: o.years_post_grad)
 
     @property
     def first_pivot(self) -> Pivot | None:
@@ -422,3 +434,31 @@ class SavedPath(Base):
     __table_args__ = (
         Index("ix_saved_paths_student_alumnus", "student_id", "alumnus_id", unique=True),
     )
+
+
+class CareerOutcome(Base):
+    """Where an alumnus ended up — the axis the constellation clusters on.
+
+    The placeholder dataset (MIDFIELD) has no employment data, so these are
+    seeded synthetically from the degree field (`provenance='synthetic'`) and
+    must be labeled as such anywhere they surface. Real career-center data comes
+    in as `provenance='reported'`, one row per snapshot (`years_post_grad`).
+    """
+
+    __tablename__ = "career_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alumnus_id: Mapped[str] = mapped_column(
+        ForeignKey("alumni.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    industry: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    occupation: Mapped[str] = mapped_column(String(128), nullable=False)
+    employer_region: Mapped[str | None] = mapped_column(String(64))
+    years_post_grad: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    provenance: Mapped[Provenance] = mapped_column(
+        Enum(Provenance, name="provenance", values_callable=lambda e: [m.value for m in e]),
+        nullable=False,
+        default=Provenance.synthetic,
+    )
+
+    alumnus: Mapped[Alumnus] = relationship(back_populates="outcomes")

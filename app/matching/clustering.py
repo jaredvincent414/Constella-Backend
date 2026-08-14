@@ -15,6 +15,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
+from app.matching.outcomes import outcome_industry
 from app.matching.scoring import ScoredAlumnus
 from app.matching.text import normalize
 
@@ -67,10 +68,11 @@ def build_clusters(
     labels: dict[str, str] = {}
 
     for item in scored:
-        key = normalize(item.alumnus.career_area) or "unspecified"
+        industry = outcome_industry(item.alumnus)
+        key = normalize(industry) or "unspecified"
         grouped.setdefault(key, []).append(item)
         # Keep the first-seen surface form so the label reads naturally.
-        labels.setdefault(key, item.alumnus.career_area)
+        labels.setdefault(key, industry)
 
     clusters: list[Cluster] = []
     for key, members in grouped.items():

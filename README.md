@@ -144,8 +144,26 @@ python -m app.jobs.derive_minors             # write derived minors (idempotent)
 
 ### Clustering
 
-Alumni group by **career area**, not job title: "Policy Analyst", "Analyst II",
-and "Senior Health Analyst" would otherwise be three clusters of one.
+Alumni group by **career outcome** — the industry they landed in ("Finance",
+"Aerospace & Defense") — resolved through one accessor
+([`app/matching/outcomes.py`](app/matching/outcomes.py)) so clustering, the
+combine endpoint, the scoring destination, and the node display all agree.
+Industry, not job title: "Policy Analyst", "Analyst II", and "Senior Health
+Analyst" would otherwise be three clusters of one.
+
+**Career-outcome data.** MIDFIELD stops at the degree, so employment is seeded
+synthetically from the degree field ([`scripts/seed_outcomes.py`](scripts/seed_outcomes.py))
+into the `career_outcomes` table, deterministically per alumnus. Every seeded
+outcome is `provenance='synthetic'` and surfaces that flag in the API so the UI
+never presents it as real. Alumni without an outcome fall back to the academic
+`career_area`, so records (and the whole test corpus) without employment data
+behave as before. Real career-center data lands as `provenance='reported'`, one
+row per snapshot (`years_post_grad`), and nothing else changes.
+
+```bash
+python -m scripts.seed_outcomes --dry-run   # preview the industry mix
+python -m scripts.seed_outcomes             # write synthetic outcomes (idempotent)
+```
 
 Cluster similarity is the **mean** of member scores, not the max. Radius is drawn
 from this number on the frontend, so a cluster with one strong member and eleven
@@ -236,8 +254,9 @@ app/
   matching/
     text.py          Normalization, Jaccard, fuzzy label matching
     programs.py      Major/minor accessors + set-diff pivots (the one seam)
+    outcomes.py      Career-outcome accessor (the clustering axis)
     scoring.py       The weighted formula (NumPy-vectorized overlap)
-    clustering.py    Career-area grouping and edge pruning
+    clustering.py    Career-outcome grouping and edge pruning
     timeline.py      Semester timeline for the detail panel
     combine.py       Path combining — merge saved paths + Sankey
     pipeline.py      score → rank → cut → cluster → prune
@@ -250,8 +269,10 @@ app/
     cip.py           CIP code → major name / career area
     sources/         midfield.py, template.py, registry
   api/routes/        constellation, alumni, simulate, paths, admin, health
-scripts/seed.py      Synthetic corpus generator (fixed RNG seed)
-tests/               67 tests, no database required
+scripts/
+  seed.py            Synthetic corpus generator (fixed RNG seed)
+  seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
+tests/               76 tests, no database required
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so the

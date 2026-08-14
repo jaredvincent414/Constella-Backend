@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from app.config import settings
+from app.matching.outcomes import outcome_industry
 from app.matching.programs import program_views
 from app.matching.scoring import StudentProfile
 from app.matching.text import normalize_course_code, tokenize
@@ -109,7 +110,7 @@ def combine_paths(
     total_unique = len(code_paths)
     confidence = round(len(shared_codes) / total_unique, 2) if total_unique else 0.0
 
-    outcome_fields = sorted({a.career_area for a in alumni})
+    outcome_fields = sorted({outcome_industry(a) for a in alumni})
 
     source_paths = [
         SourcePath(
@@ -159,7 +160,7 @@ def _build_sankey(
 
     outcome_paths: dict[str, set[int]] = defaultdict(set)
     for i, a in enumerate(alumni):
-        outcome_paths[a.career_area].add(i)
+        outcome_paths[outcome_industry(a)].add(i)
 
     nodes = [
         SankeyNode(id=f"{stage}-{label}", stage=stage, label=label, path_ids=sorted(pids))
@@ -188,7 +189,7 @@ def _build_sankey(
             links.append(
                 SankeyLink(
                     source=f"{last}-{name_of[rep[(i, last)]]}",
-                    target=f"{OUTCOME_STAGE}-{alumni[i].career_area}",
+                    target=f"{OUTCOME_STAGE}-{outcome_industry(alumni[i])}",
                     path_id=i,
                 )
             )

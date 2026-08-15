@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 167 tests
+pytest                                    # 186 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -121,6 +121,13 @@ in `app/ingest/records.py`; `loader.py` is the only ORM-facing code. Nothing
 downstream learns which dataset ran. The tenant travels as
 `AlumnusRecord.school_name` — deliberately *not* read off `outcome_org`, which
 means "employer" the moment a source carries real career data.
+
+**Match rationales are derived, not written.** `app/matching/explain.py` builds
+`matchReason` from the same components that produced the ranking, and never
+mentions the alumnus's career outcome — that outcome is synthetic on the
+placeholder dataset, and a rationale is where invented data would read as fact.
+If you are ever tempted to have a model write these, don't: an explanation that
+disagrees with the ranking is worse than none.
 
 **Provenance labeling.** `synthetic` (seeded employment) and `derived` (inferred
 minors) data must surface its provenance anywhere it reaches the UI. MIDFIELD

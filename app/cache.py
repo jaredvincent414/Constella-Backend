@@ -26,7 +26,8 @@ _client: aioredis.Redis | None = None
 # v4: program identity keys on name, so major_match is no longer a constant
 #     against CIP-carrying sources. Same shape, different scores — cached
 #     entries would otherwise pin every student to the old flat ranking.
-CACHE_VERSION = "v4"
+# v5: alumni carry a `matchReason` (nodes) / structured match reason (detail).
+CACHE_VERSION = "v5"
 
 
 def get_client() -> aioredis.Redis:

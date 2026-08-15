@@ -12,9 +12,12 @@ import re
 import pytest
 
 from app.matching.programs import (
+    all_minors,
     detect_pivots,
+    final_majors,
     majors_at,
     minors_at,
+    origin_majors,
     student_majors,
     student_minors,
 )
@@ -173,3 +176,61 @@ def test_only_the_accessor_layer_reads_program_rows():
         if hits:
             offenders[str(path.relative_to(root))] = hits
     assert not offenders, f"program field read outside the accessor layer: {offenders}"
+
+
+# --- 6.6 program identity is symmetric across sources -----------------------
+class TestProgramKeySpace:
+    """A source that supplies `cip6` must not change what a program *is*.
+
+    MIDFIELD populates cip6 on `alumnus_majors` and never on `student_program`,
+    so keying on "cip6 if present" compared CIP codes against names and scored
+    every real major match as 0. These pin the key space to the one field both
+    sides always have.
+    """
+
+    def test_accessors_key_on_name_even_when_cip_is_present(self):
+        with_cip = make_alumnus(
+            "cip",
+            origin_major="Engineering",
+            final_major="Electrical Engineering",
+            pivot_semester=2,
+            minors=[("Mathematics", 3)],
+            program_cip6="140102",
+        )
+        assert origin_majors(with_cip) == {"Engineering"}
+        assert final_majors(with_cip) == {"Electrical Engineering"}
+        assert all_minors(with_cip) == {"Mathematics"}
+
+    def test_cip_presence_does_not_change_the_key(self):
+        kwargs = dict(origin_major="Engineering", final_major=None, pivot_semester=None)
+        assert origin_majors(make_alumnus("a", **kwargs, program_cip6="140102")) == origin_majors(
+            make_alumnus("b", **kwargs)
+        )
+
+    def test_student_and_alumnus_sides_land_in_the_same_key_space(self):
+        """The real-data shape: alumnus rows carry a CIP, the student's don't."""
+        alumnus = make_alumnus(
+            "eng",
+            origin_major="Engineering",
+            final_major=None,
+            pivot_semester=None,
+            program_cip6="140102",
+        )
+        student = Student(id="s", declared_major=None)
+        student.programs = [StudentProgram(name="Engineering", term=0, role=ProgramRole.primary)]
+
+        assert student_majors(student) & origin_majors(alumnus) == {"Engineering"}
+
+    def test_major_match_is_not_zeroed_by_a_cip_on_one_side(self):
+        """The end-to-end symptom: an exact major match scoring as no match."""
+        profile = make_profile(declared_major="Engineering", intended_direction=None)
+        profile.current_majors = {"Engineering"}
+        alumnus = make_alumnus(
+            "eng",
+            origin_major="Engineering",
+            final_major=None,
+            pivot_semester=None,
+            program_cip6="140102",
+        )
+        # from-side is an exact hit (1.0); to-side unspecified scores neutral.
+        assert major_match(profile, alumnus) == pytest.approx(0.75)

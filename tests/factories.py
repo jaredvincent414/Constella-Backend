@@ -58,7 +58,16 @@ def make_alumnus(
     industry: str | None = None,
     occupation: str = "Analyst",
     years_post_grad: int = 3,
+    program_cip6: str | None = None,
 ) -> Alumnus:
+    """Build an unsaved Alumnus.
+
+    `program_cip6` stamps a CIP code on every program row, reproducing the shape
+    real registrar exports have: CIP on the alumni side, never on the student
+    side (the app writes `student_program` from free text). Leaving it None —
+    the default — is what let a key-space mismatch between the two sides go
+    unnoticed, so tests that touch program matching should set it.
+    """
     alumnus = Alumnus(
         id=alumnus_id,
         graduation_year=graduation_year,
@@ -81,6 +90,7 @@ def make_alumnus(
     alumnus.majors.append(
         AlumnusMajor(
             name=origin_major,
+            cip6=program_cip6,
             declared_semester=1,
             is_final=final_major is None,
             role=ProgramRole.primary,
@@ -91,6 +101,7 @@ def make_alumnus(
         alumnus.majors.append(
             AlumnusMajor(
                 name=final_major,
+                cip6=program_cip6,
                 declared_semester=pivot_semester if pivot_semester is not None else 4,
                 is_final=True,
                 role=ProgramRole.primary,
@@ -101,6 +112,7 @@ def make_alumnus(
         alumnus.majors.append(
             AlumnusMajor(
                 name=name,
+                cip6=program_cip6,
                 declared_semester=declared,
                 is_final=True,
                 role=ProgramRole.second_major,
@@ -111,6 +123,7 @@ def make_alumnus(
         alumnus.majors.append(
             AlumnusMajor(
                 name=name,
+                cip6=program_cip6,
                 declared_semester=declared,
                 is_final=True,
                 role=ProgramRole.minor,

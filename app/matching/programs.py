@@ -12,9 +12,9 @@ with `.programs`) or a raw list of program rows — so callers pass `alumnus`, n
 session: repositories eager-load and the matching engine operates on plain
 objects, so an accessor doing IO would break that contract.
 
-Program identity is the normalized program **name** today; when a source
-supplies CIP codes (`cip6`) those become the set element instead. Either way the
-set operations below are identical.
+Program identity is the program **name**, on both sides of every comparison. It
+is deliberately *not* the CIP code even where one exists — see `_key` for why a
+symmetric key matters more here than a precise one.
 """
 
 from __future__ import annotations
@@ -68,9 +68,28 @@ def _is_final(row: ProgramRow) -> bool:
 
 
 def _key(row: ProgramRow) -> str:
-    """Set element for a program — its CIP code if present, else its name."""
-    cip = getattr(row, "cip6", None)
-    return cip or row.name
+    """Set element for a program — its **name**.
+
+    Name rather than `cip6`, even though CIP is the more precise identifier,
+    because CIP is populated *asymmetrically*: MIDFIELD (and any registrar
+    export) carries it on `alumnus_majors` but never on `student_program`, which
+    the app writes from free text. Keying on "cip6 if present" therefore put the
+    two sides of every comparison in different key spaces — the element kernel
+    was evaluating `text_similarity("Engineering", "140102")`, which is 0 — and
+    that silently zeroed the entire 20% major-match component on real data. It
+    also left `derive_minors` unable to recognize a declared minor, since it
+    matches discipline names against this set.
+
+    `name` is non-nullable on both tables, so it is the only key both sides
+    always have. A symmetric key beats a more precise one that only one side
+    populates.
+
+    When a source does supply `cip6` on both sides, the place for CIP equality is
+    the comparison kernel (`scoring.soft_jaccard`) as a fast path above name
+    similarity — not here, where it silently changes what identity *means*
+    depending on the source.
+    """
+    return row.name or getattr(row, "cip6", None) or ""
 
 
 def _term(row: ProgramRow) -> int:
@@ -244,8 +263,8 @@ class ProgramView:
 def program_views(source) -> list[ProgramView]:
     """The graduation majors and all minors, each tagged with provenance.
 
-    `code` is the human-readable program name for display (matching the `majors`
-    field), even though set matching keys on cip6 when available.
+    `code` is the human-readable program name for display, matching the `majors`
+    field and the key the accessors above return.
     """
     rows = _rows(source)
     provenance_of: dict[str, str] = {}

@@ -181,6 +181,49 @@ too thin to label.
 rules exactly so the API isn't shipping edges that get discarded. Both bounds
 are configurable (`EDGE_MIN_WEIGHT`, `EDGE_MAX_COUNT`).
 
+## Matching quality (offline eval)
+
+This is a recommender, so the formula can't be changed by inspection. Run the
+harness before and after any scoring change:
+
+```bash
+python -m app.eval --school institution-j --students 25
+```
+
+It answers three things a unit test can't:
+
+**Do the components discriminate?** A component that returns the same value for
+every alumnus consumes its weight and ranks nothing, and no per-alumnus
+assertion can see it. The report flags any that were constant.
+
+**Is the ranking better than chance?** There's no labelled "these alumni were
+useful" set, and hand-building one would be circular — the career outcomes are
+synthetic. So the corpus grades itself: take an alumnus who pivoted, rewind them
+to their pivot (pre-pivot transcript, origin major, the year it happened), and
+ask whether the engine ranks alumni who landed where they *actually* landed
+above the rest. That destination is a real label from the source. The held-out
+profile carries **no `intendedDirection`** — that field is scored against the
+destination, so filling it in would hand the scorer the answer.
+
+Read `lift`, not raw precision: it's precision@k over the base rate, so 1.00x
+means the ranking is doing nothing a shuffle wouldn't.
+
+**Does a component change the ordering?** Ablation drops each one and reports
+rank correlation against the full model. A component can have a healthy spread
+and still be inert.
+
+Current baseline on `institution-j` (611 alumni, 25 queries):
+
+| k | precision | recall | lift |
+|---|---|---|---|
+| 5 | 0.120 | 0.022 | 1.09x |
+| 10 | 0.152 | 0.045 | 1.38x |
+| 25 | 0.154 | 0.090 | 1.40x |
+
+MRR 0.28. `interest_overlap` is inert on this corpus (MIDFIELD carries no
+interest data), so 10% of the weight currently ranks nothing — see
+[Open](#open).
+
 ## Create Path (path combining)
 
 Students bookmark alumni journeys (`saved_paths`), then select 2+ on the Create
@@ -316,6 +359,10 @@ app/
   jobs/
     recompute.py     Background precompute
     derive_minors.py Infer de facto minors from course concentration
+  eval/              Offline matching-quality harness
+    metrics.py       Ranking + distribution metrics (pure)
+    harness.py       Held-out pivot prediction, ablation, distributions
+    report.py        Text rendering
   ingest/            Swappable data-source layer
     records.py       Source-neutral dataclasses (the adapter contract)
     loader.py        Records → Postgres (the only ORM-facing code)
@@ -326,7 +373,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               130 tests; only the security suite needs Postgres
+tests/               167 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so
@@ -358,10 +405,18 @@ collide with anything already running locally.
 
 ### Open
 
-- **Similarity range.** Scores cluster in roughly 0.35–0.70 on the synthetic
-  corpus. The frontend spec flags that a narrow spread makes the radial layout
-  visually flat; whether that needs a domain stretch depends on real score
-  distributions, not these.
+- **Similarity range.** Scores span roughly 0.05–0.85 on real data. Part of the
+  original "narrow spread" complaint was a bug (major-match was a constant; see
+  the program key-space fix), and part is structural: a component with no data
+  behind it contributes a hard 0 rather than being renormalized away, which
+  compresses every score. `interest_overlap` does exactly that on MIDFIELD —
+  10% of the weight is inert, confirmed by `python -m app.eval`. Renormalizing
+  over the components a source actually populates is the fix.
+- **Thin transcripts quantize the primary signal.** Course overlap divides by
+  the student's course count, so a 6-course student's 50% component takes only
+  7 possible values across the whole corpus — huge ties, broken arbitrarily on
+  id. It hits early-year students hardest, who have the least else to rank on.
+  Needs smoothing or a confidence weight, not a bigger corpus.
 - **Pivot query filter.** `filter_by_pivot_query` requires both origin and
   destination to clear 0.3 similarity, which is tight — a Biochemistry →
   Health Policy query narrows 240 alumni to 5. Worth loosening once there's

@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 130 tests
+pytest                                    # 167 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -34,6 +34,12 @@ Real practice data instead of the seed:
 ```bash
 python -m app.ingest --source midfield --alumni 1500 --reset
 python -m app.jobs.recompute
+```
+
+Before and after **any** change to the scoring formula:
+
+```bash
+python -m app.eval --school institution-j
 ```
 
 ## Security invariants
@@ -120,6 +126,28 @@ means "employer" the moment a source carries real career data.
 minors) data must surface its provenance anywhere it reaches the UI. MIDFIELD
 has no employment data at all; the career outcomes are a stand-in. Never present
 either as reported fact.
+
+## Changing the scoring formula
+
+Don't do it by inspection — run `python -m app.eval` before and after, and put
+the before/after `lift` numbers in the PR. The engine is only ~1.4x better than
+chance at predicting real destinations today, so a change that *feels* right is
+well within the noise you can't see by reading a diff.
+
+Two failure modes the harness exists to catch, both of which have already
+happened here:
+
+- **A component that ranks nothing.** `major_match` sat at a constant 0.25 for
+  every alumnus in the corpus, consuming 20% of the weight, while every unit
+  test passed — a per-alumnus assertion cannot see a corpus-wide constant.
+  `TestComponentsDiscriminate` in `tests/test_scoring.py` is the cheap canary;
+  the harness is the real check.
+- **A component that varies but doesn't reorder.** Ablation catches these; a
+  rank correlation of 1.0 means the component is inert regardless of spread.
+
+When adding an eval, never let the held-out profile carry the label. The
+destination lives in `intended_direction`, which `major_match` scores directly —
+filling it in makes the metrics look excellent and measure nothing.
 
 ## Conventions
 

@@ -19,6 +19,7 @@ courses fall back to `kept`.
 
 from __future__ import annotations
 
+from app.matching.explain import explain_match
 from app.matching.outcomes import build_outcome
 from app.matching.programs import program_views
 from app.matching.scoring import ScoredAlumnus, StudentProfile
@@ -26,6 +27,7 @@ from app.matching.text import normalize_course_code
 from app.models import TOTAL_SEMESTERS, Alumnus, semester_label
 from app.schemas import (
     AlumnusDetail,
+    MatchReasonOut,
     ProgramOut,
     ScoreBreakdown,
     TimelineCourse,
@@ -84,6 +86,18 @@ def build_semesters(
     return semesters
 
 
+def _reason_out(
+    scored: ScoredAlumnus | None, alumnus: Alumnus, profile: StudentProfile | None
+) -> MatchReasonOut | None:
+    """The rationale, when there is a student to compare against."""
+    if profile is None:
+        return None
+    reason = explain_match(scored, alumnus, profile)
+    if reason is None:
+        return None
+    return MatchReasonOut(summary=reason.summary, factors=reason.factors)
+
+
 def build_detail(
     scored: ScoredAlumnus | None,
     alumnus: Alumnus,
@@ -119,4 +133,5 @@ def build_detail(
         interests=list(alumnus.interests or []),
         semesters=build_semesters(alumnus, profile),
         score_breakdown=breakdown,
+        match_reason=_reason_out(scored, alumnus, profile),
     )

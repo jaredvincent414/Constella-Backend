@@ -63,11 +63,28 @@ class ProgramOut(CamelModel):
     provenance: str = Field(description="'reported' | 'derived'")
 
 
+class MatchReasonOut(CamelModel):
+    """Why this alumnus matched, in words, derived from the score components.
+
+    Describes only what the student and alumnus share — never the alumnus's
+    career outcome, which is `provenance='synthetic'` on the placeholder dataset
+    and must not be asserted as fact inside a rationale.
+    """
+
+    summary: str = Field(description="One line, ready to render")
+    factors: list[str] = Field(description="The same clauses unjoined, for chips")
+
+
 class AlumnusOut(CamelModel):
     id: str
     cluster_id: str
     similarity: float = Field(ge=0.0, le=1.0, description="Drives node size on the frontend")
     class_year: int
+    # Just the sentence on nodes: the structured form is on the detail payload,
+    # and this one ships up to `maxAlumni` times per response.
+    match_reason: str | None = Field(
+        default=None, description="One-line rationale for the node tooltip"
+    )
     # Graduation major names, unchanged. `programs` carries the full picture —
     # multiple majors, minors, and provenance — for clients that want it.
     majors: list[str]
@@ -140,6 +157,9 @@ class AlumnusDetail(CamelModel):
     interests: list[str]
     semesters: list[TimelineSemester]
     score_breakdown: ScoreBreakdown | None = None
+    # None when nothing specific matched — an alumnus can rank on neutral
+    # defaults alone, and inventing a reason for those would be a fabrication.
+    match_reason: MatchReasonOut | None = None
 
 
 # --------------------------------------------------------------------------

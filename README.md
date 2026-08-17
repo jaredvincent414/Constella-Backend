@@ -330,6 +330,24 @@ Each alumnus carries a `programs` list — majors and minors with `role` and
 inferred minor. Simulate matches include a `pivotType` (`added`/`dropped`/
 `switched`).
 
+**`matchReason`** is a one-line rationale — "Shared Genetics and Organic Chem,
+started in Biochemistry, like you" — on every node, with the clauses also
+available unjoined on the detail payload. Two rules make it trustworthy:
+
+* **Generated from the score components, never narrated.** It is derived from the
+  same numbers that produced the ranking, so it cannot disagree with the order
+  the nodes are in. A model asked to explain a ranking after the fact writes
+  fluent reasons for an order it never saw, and the first divergence teaches the
+  student to distrust the map.
+* **It describes the overlap, never the destination.** Career outcomes are
+  `provenance='synthetic'` on the placeholder dataset, and a rationale is exactly
+  where fabricated data reads as fact. The destination is already in the payload
+  beside its provenance flag.
+
+It is `null` when nothing specific matched — an alumnus can rank on neutral
+defaults alone, and inventing a reason for those is the failure the feature is
+shaped to avoid.
+
 Timeline course status is resolved relative to the viewing student — `kept` is a
 course you've already taken, `added` is one you haven't, `dropped` is one the
 alumnus abandoned. That framing is what makes the timeline answer "what changes
@@ -350,6 +368,7 @@ app/
   matching/
     text.py          Normalization, Jaccard, fuzzy label matching
     programs.py      Major/minor accessors + set-diff pivots (the one seam)
+    explain.py       matchReason, derived from the score components
     outcomes.py      Career-outcome accessor (the clustering axis)
     scoring.py       The weighted formula (NumPy-vectorized overlap)
     clustering.py    Career-outcome grouping and edge pruning
@@ -373,7 +392,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               167 tests; only the security suite needs Postgres
+tests/               186 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

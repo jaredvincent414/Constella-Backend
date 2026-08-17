@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from app.config import settings
 from app.matching.clustering import DEFAULT_MAX_CLUSTERS, build_cluster_edges, build_clusters
+from app.matching.explain import explain_match
 from app.matching.outcomes import build_outcome
 from app.matching.programs import program_views
 from app.matching.scoring import ScoredAlumnus, StudentProfile, score_corpus
@@ -61,12 +62,14 @@ def build_constellation(
     for cluster in clusters:
         for member in cluster.members:
             record = member.alumnus
+            reason = explain_match(member, record, profile)
             alumni_out.append(
                 AlumnusOut(
                     id=record.id,
                     cluster_id=cluster.id,
                     similarity=member.total,
                     class_year=record.graduation_year,
+                    match_reason=reason.summary if reason else None,
                     majors=record.final_majors,
                     programs=[
                         ProgramOut(code=p.code, role=p.role, provenance=p.provenance)

@@ -191,3 +191,67 @@ class TestRanking:
 
     def test_empty_corpus(self):
         assert score_corpus(make_profile(), []) == []
+
+
+class TestComponentsDiscriminate:
+    """Every weighted component must actually vary across a corpus.
+
+    A component that returns the same value for every alumnus contributes a
+    constant — it consumes its weight while ranking nothing, and the effect is
+    invisible in a per-alumnus assertion. That is exactly how a key-space
+    mismatch left `major_match` a flat 0.25 across 611 real alumni while every
+    existing unit test passed. These are cheap canaries for the whole class.
+    """
+
+    def _corpus(self):
+        """Alumni that differ on every axis the formula reads, in the shape real
+        registrar data has (CIP present on the alumni side only)."""
+        specs = [
+            ("Engineering", "Electrical Engineering", 2),
+            ("Biochemistry", "Public Health", 3),
+            ("Mathematics", "Statistics", 4),
+            ("English", "Journalism", 5),
+        ]
+        return [
+            make_alumnus(
+                f"a{i}",
+                origin_major=origin,
+                final_major=final,
+                pivot_semester=term,
+                courses=[(f"C{i}", f"Course {i}", 0)],
+                interests=[f"Club {i}"],
+                program_cip6=f"14010{i}",
+            )
+            for i, (origin, final, term) in enumerate(specs)
+        ]
+
+    def test_major_match_varies_across_the_corpus(self):
+        profile = make_profile(declared_major="Engineering", intended_direction="Statistics")
+        profile.current_majors = {"Engineering"}
+        values = {major_match(profile, a) for a in self._corpus()}
+        assert len(values) > 1, f"major_match is constant at {values} — it ranks nothing"
+
+    def test_major_match_rewards_the_matching_origin(self):
+        """Beyond varying, it has to vary in the right direction."""
+        profile = make_profile(declared_major="Engineering", intended_direction=None)
+        profile.current_majors = {"Engineering"}
+        corpus = self._corpus()
+        match = next(a for a in corpus if "Engineering" in {m.name for m in a.majors})
+        other = next(a for a in corpus if "Mathematics" in {m.name for m in a.majors})
+        assert major_match(profile, match) > major_match(profile, other)
+
+    def test_pivot_alignment_varies_across_the_corpus(self):
+        profile = make_profile()
+        values = {s.pivot_year_alignment for s in score_corpus(profile, self._corpus())}
+        assert len(values) > 1
+
+    def test_scored_totals_are_not_all_equal(self):
+        profile = make_profile(
+            declared_major="Engineering",
+            intended_direction="Statistics",
+            courses=[("C0", "Course 0"), ("C1", "Course 1")],
+            interests=["Club 0"],
+        )
+        profile.current_majors = {"Engineering"}
+        totals = {s.total for s in score_corpus(profile, self._corpus())}
+        assert len(totals) > 1

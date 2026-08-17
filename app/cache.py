@@ -23,7 +23,10 @@ _client: aioredis.Redis | None = None
 # deploy are ignored rather than deserialized into the wrong schema.
 # v2: alumni carry a structured `programs` list (majors + minors + provenance).
 # v3: clusters key on career outcome (industry); outcomes carry employment data.
-CACHE_VERSION = "v3"
+# v4: program identity keys on name, so major_match is no longer a constant
+#     against CIP-carrying sources. Same shape, different scores — cached
+#     entries would otherwise pin every student to the old flat ranking.
+CACHE_VERSION = "v4"
 
 
 def get_client() -> aioredis.Redis:

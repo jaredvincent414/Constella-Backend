@@ -15,7 +15,7 @@ from starlette.requests import Request
 from app import cache
 from app.api.responses import cached_json
 from app.config import settings
-from app.jobs.recompute import queries_to_warm, query_hash
+from app.jobs.recompute import ExploreQuery, queries_to_warm
 from app.matching import (
     build_constellation,
     build_constellation_for_query,
@@ -321,31 +321,78 @@ def index(monkeypatch):
     return _set
 
 
+class TestExploreQueryKeying:
+    """Every input that changes the payload has to change the key.
+
+    A facet left out would be the expensive kind of bug: a filtered result
+    written over the unfiltered entry, then served to the next request that
+    asked for everything.
+    """
+
+    def test_each_facet_changes_the_hash(self):
+        base = ExploreQuery.build(max_alumni=200)
+        variants = [
+            ExploreQuery.build(max_alumni=200, from_major="Economics"),
+            ExploreQuery.build(max_alumni=200, to_major="Public Health"),
+            ExploreQuery.build(max_alumni=50),
+            ExploreQuery.build(max_alumni=200, interests=["Biology"]),
+            ExploreQuery.build(max_alumni=200, career_area="Health Policy"),
+            ExploreQuery.build(max_alumni=200, major="Biochemistry"),
+        ]
+        hashes = {base.cache_hash()} | {v.cache_hash() for v in variants}
+        assert len(hashes) == len(variants) + 1
+
+    def test_interest_order_does_not_fork_the_cache(self):
+        """The chips are a set to the user. Two orders holding identical
+        payloads must not occupy two entries."""
+        first = ExploreQuery.build(max_alumni=200, interests=["Biology", "Psychology"])
+        second = ExploreQuery.build(max_alumni=200, interests=["Psychology", "Biology"])
+        assert first == second
+        assert first.cache_hash() == second.cache_hash()
+
+    def test_blank_facets_are_the_broad_query(self):
+        assert ExploreQuery.build(max_alumni=200, career_area="", major=None).is_broad
+        assert not ExploreQuery.build(max_alumni=200, career_area="Health Policy").is_broad
+
+    def test_params_round_trip(self):
+        query = ExploreQuery.build(
+            max_alumni=75,
+            from_major="Economics",
+            to_major="Public Health",
+            interests=["Biology", "Debate"],
+            career_area="Health Policy",
+            major="Biochemistry",
+        )
+        assert ExploreQuery.from_params(query.as_params(), 200) == query
+
+    def test_a_malformed_index_entry_is_not_rebuilt(self):
+        """Entries written by older deploys must mean "skip", never "guess"."""
+        assert ExploreQuery.from_params({"maxAlumni": "not-a-number"}, 200) is None
+        assert ExploreQuery.from_params({"interests": "Biology"}, 200) is None
+
+
 class TestQueriesToWarm:
     async def test_bare_explore_is_always_warmed(self, index):
         index({})
-        assert await queries_to_warm("stu-1", 200) == [(None, None, 200)]
+        assert await queries_to_warm("stu-1", 200) == [ExploreQuery.build(max_alumni=200)]
 
     async def test_includes_the_queries_the_student_actually_ran(self, index):
         """Demand is the only honest source for this list.
 
         The job used to warm one entry per student while a student whose page
-        always sends a pivot query missed the cache every single time.
+        always sends a pivot query — or a facet — missed the cache every time.
         """
-        key = cache.constellation_key("stu-1", query_hash("Economics", "Public Health", 50))
-        index(
-            {
-                key: {
-                    "kind": cache.KIND_CONSTELLATION,
-                    "fromMajor": "Economics",
-                    "toMajor": "Public Health",
-                    "maxAlumni": 50,
-                }
-            }
+        ran = ExploreQuery.build(
+            max_alumni=50,
+            from_major="Economics",
+            to_major="Public Health",
+            interests=["Biology"],
+            career_area="Health Policy",
         )
+        index({cache.constellation_key("stu-1", ran.cache_hash()): ran.as_params()})
         assert await queries_to_warm("stu-1", 200) == [
-            (None, None, 200),
-            ("Economics", "Public Health", 50),
+            ExploreQuery.build(max_alumni=200),
+            ran,
         ]
 
     async def test_skips_entries_that_are_not_constellations(self, index):
@@ -358,17 +405,12 @@ class TestQueriesToWarm:
                 "k3": {},
             }
         )
-        assert await queries_to_warm("stu-1", 200) == [(None, None, 200)]
+        assert await queries_to_warm("stu-1", 200) == [ExploreQuery.build(max_alumni=200)]
 
     async def test_is_capped(self, index):
         index(
             {
-                f"k{i}": {
-                    "kind": cache.KIND_CONSTELLATION,
-                    "fromMajor": None,
-                    "toMajor": f"Field {i}",
-                    "maxAlumni": 200,
-                }
+                f"k{i}": ExploreQuery.build(max_alumni=200, to_major=f"Field {i}").as_params()
                 for i in range(50)
             }
         )
@@ -377,4 +419,4 @@ class TestQueriesToWarm:
 
     async def test_falls_back_to_the_bare_query_when_redis_is_unreachable(self, index):
         index(ConnectionError("redis down"))
-        assert await queries_to_warm("stu-1", 200) == [(None, None, 200)]
+        assert await queries_to_warm("stu-1", 200) == [ExploreQuery.build(max_alumni=200)]

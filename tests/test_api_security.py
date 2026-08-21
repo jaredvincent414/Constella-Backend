@@ -175,6 +175,11 @@ def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _alumni_ids(payload: dict) -> set[str]:
+    """Alumni live inside their cluster now — the grouping is the layout."""
+    return {a["id"] for cluster in payload["clusters"] for a in cluster["alumni"]}
+
+
 # --------------------------------------------------------------------------
 # 401 — no token, no access
 # --------------------------------------------------------------------------
@@ -265,8 +270,8 @@ async def test_cached_token_still_scopes_to_its_own_school(client, seeded):
         a = await client.get("/api/constellation", headers=auth(TOKEN_A))
         b = await client.get("/api/constellation", headers=auth(TOKEN_B))
         assert a.status_code == 200 and b.status_code == 200
-        assert ALUM_B not in {x["id"] for x in a.json()["alumni"]}
-        assert ALUM_A not in {x["id"] for x in b.json()["alumni"]}
+        assert ALUM_B not in _alumni_ids(a.json())
+        assert ALUM_A not in _alumni_ids(b.json())
 
     assert await cache.get_principal(hash_token(TOKEN_A)) == (STUDENT_A, SCHOOL_A)
     assert await cache.get_principal(hash_token(TOKEN_B)) == (STUDENT_B, SCHOOL_B)
@@ -376,13 +381,13 @@ async def test_precomputed_constellation_only_contains_your_school(client, seede
     served = await client.get("/api/constellation", headers=auth(TOKEN_A))
     assert served.status_code == 200
     assert served.json()["meta"]["cached"] is True
-    assert ALUM_B not in {a["id"] for a in served.json()["alumni"]}
+    assert ALUM_B not in _alumni_ids(served.json())
 
 
 async def test_constellation_only_contains_your_school(client, seeded):
     response = await client.get("/api/constellation?refresh=true", headers=auth(TOKEN_A))
     assert response.status_code == 200
-    alumni_ids = {a["id"] for a in response.json()["alumni"]}
+    alumni_ids = _alumni_ids(response.json())
     assert ALUM_B not in alumni_ids
 
 

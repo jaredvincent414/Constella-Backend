@@ -34,12 +34,12 @@ class StudentContext(CamelModel):
     courses: list[str]
 
 
-class ClusterOut(CamelModel):
-    id: str
-    label: str = Field(description='Human-readable career area, e.g. "Health Policy"')
-    similarity: float = Field(ge=0.0, le=1.0, description="Drives cluster radius on the frontend")
-    top_majors: list[str] = Field(description="For the hover tooltip")
-    member_count: int
+class PivotPointOut(CamelModel):
+    """A term where this alumnus changed direction — the diamond on the timeline."""
+
+    semester: str = Field(description='e.g. "Junior Fall"')
+    from_major: str
+    to_major: str
 
 
 class OutcomeOut(CamelModel):
@@ -76,20 +76,51 @@ class MatchReasonOut(CamelModel):
 
 
 class AlumnusOut(CamelModel):
+    """One node on the map, nested under the cluster it belongs to.
+
+    Note what is *not* here: `coursesBySemester`. A transcript is ~50 rows and
+    this ships up to `maxAlumni` times per response; the detail panel fetches
+    one alumnus at a time from `/api/alumni/{id}/timeline`, which is cached per
+    (student, alumnus) and resolves courses relative to the caller.
+    """
+
     id: str
-    cluster_id: str
-    similarity: float = Field(ge=0.0, le=1.0, description="Drives node size on the frontend")
-    class_year: int
+    similarity_score: float = Field(
+        ge=0.0, le=100.0, description="Match percentage. Drives node size and the match label"
+    )
+    graduation_year: int
+    cluster: str = Field(description="The cluster's label, for node colouring")
     # Just the sentence on nodes: the structured form is on the detail payload,
     # and this one ships up to `maxAlumni` times per response.
     match_reason: str | None = Field(
         default=None, description="One-line rationale for the node tooltip"
     )
-    # Graduation major names, unchanged. `programs` carries the full picture —
-    # multiple majors, minors, and provenance — for clients that want it.
     majors: list[str]
+    minors: list[str] = Field(default_factory=list)
+    # The full picture — multiple majors, minors, and provenance. `majors` and
+    # `minors` above are the flattened names, for clients that want only those.
     programs: list[ProgramOut] = Field(default_factory=list)
-    outcome: OutcomeOut
+    career_outcome: OutcomeOut
+    interests: list[str] = Field(default_factory=list)
+    pivot_points: list[PivotPointOut] = Field(default_factory=list)
+
+
+class ClusterOut(CamelModel):
+    """A career-outcome cluster and the alumni in it.
+
+    Alumni are nested rather than listed flat with a `clusterId`, because the
+    grouping *is* the layout: the frontend draws one constellation per cluster.
+
+    Still no geometry. `x`/`y` belong to the force layout, and the frontend can
+    derive them from this grouping — shipping coordinates would freeze its
+    layout model in the API.
+    """
+
+    id: str
+    label: str = Field(description='Human-readable career area, e.g. "Health Policy"')
+    similarity: float = Field(ge=0.0, le=1.0, description="Drives cluster radius on the frontend")
+    top_majors: list[str] = Field(description="For the hover tooltip")
+    alumni: list[AlumnusOut]
 
 
 class ClusterEdgeOut(CamelModel):
@@ -101,8 +132,9 @@ class ClusterEdgeOut(CamelModel):
 class ConstellationResponse(CamelModel):
     student: StudentContext
     clusters: list[ClusterOut]
-    alumni: list[AlumnusOut]
     cluster_edges: list[ClusterEdgeOut]
+    total_alumni: int = Field(description="Alumni in the response, across all clusters")
+    summary: str = Field(description="One line for the header, e.g. '50 alumni across 6 clusters'")
     meta: ConstellationMeta
 
 
@@ -125,7 +157,7 @@ class ConstellationMeta(CamelModel):
 
 class TimelineCourse(CamelModel):
     name: str
-    status: str = Field(description="'kept' | 'added' | 'dropped'")
+    status: str = Field(description="'kept' | 'new' | 'dropped'")
 
 
 class TimelineSemester(CamelModel):

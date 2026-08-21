@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from dataclasses import dataclass
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,32 +44,114 @@ from app.models import Student
 
 log = structlog.get_logger(__name__)
 
-# (from_major, to_major, max_alumni) — the three inputs the cache key covers.
-Query = tuple[str | None, str | None, int]
+@dataclass(frozen=True)
+class ExploreQuery:
+    """Everything about a request that changes the constellation it produces.
 
+    One object because these three jobs have to stay in step: deriving the cache
+    key, recording the query in the student's index, and rebuilding it from that
+    index in the nightly job. When they were three loose arguments, adding a
+    facet meant remembering all three call sites.
 
-def query_hash(from_major: str | None, to_major: str | None, max_alumni: int) -> str:
-    """Cache-key component covering everything that changes the result.
-
-    A student's constellation differs per pivot query, so the query has to be
-    part of the key or a What If run would poison the broad-explore cache.
+    A facet left out of the key would be the expensive kind of bug: a filtered
+    result written over the unfiltered entry, then served to the next request
+    that asked for everything.
     """
-    raw = f"{from_major or ''}|{to_major or ''}|{max_alumni}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    from_major: str | None = None
+    to_major: str | None = None
+    max_alumni: int = 0
+    # Sorted on construction — the chips are a set to the user, so chip order
+    # must not fork the cache into entries holding identical payloads.
+    interests: tuple[str, ...] = ()
+    career_area: str | None = None
+    major: str | None = None
+
+    @classmethod
+    def build(
+        cls,
+        max_alumni: int,
+        from_major: str | None = None,
+        to_major: str | None = None,
+        interests: list[str] | None = None,
+        career_area: str | None = None,
+        major: str | None = None,
+    ) -> ExploreQuery:
+        return cls(
+            from_major=from_major or None,
+            to_major=to_major or None,
+            max_alumni=max_alumni,
+            interests=tuple(sorted(interests or ())),
+            career_area=career_area or None,
+            major=major or None,
+        )
+
+    @property
+    def is_broad(self) -> bool:
+        """True for the plain explore query — no pivot, no facets."""
+        return not (
+            self.from_major or self.to_major or self.interests or self.career_area or self.major
+        )
+
+    def cache_hash(self) -> str:
+        raw = "|".join(
+            [
+                self.from_major or "",
+                self.to_major or "",
+                str(self.max_alumni),
+                ",".join(self.interests),
+                self.career_area or "",
+                self.major or "",
+            ]
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def as_params(self) -> dict:
+        return {
+            "kind": cache.KIND_CONSTELLATION,
+            "fromMajor": self.from_major,
+            "toMajor": self.to_major,
+            "maxAlumni": self.max_alumni,
+            "interests": list(self.interests),
+            "careerArea": self.career_area,
+            "major": self.major,
+        }
+
+    @classmethod
+    def from_params(cls, params: dict, default_limit: int) -> ExploreQuery | None:
+        """Rebuild from an index entry, or None if it can't be trusted.
+
+        Index entries are written by older deploys too, so a missing or
+        malformed field means "don't try to rebuild this", not "guess".
+        """
+        try:
+            interests = params.get("interests") or []
+            if not isinstance(interests, list):
+                return None
+            return cls.build(
+                max_alumni=int(params.get("maxAlumni") or default_limit),
+                from_major=params.get("fromMajor"),
+                to_major=params.get("toMajor"),
+                interests=[str(i) for i in interests],
+                career_area=params.get("careerArea"),
+                major=params.get("major"),
+            )
+        except (TypeError, ValueError):
+            return None
 
 
-async def queries_to_warm(student_id: str, limit: int) -> list[Query]:
+async def queries_to_warm(student_id: str, limit: int) -> list[ExploreQuery]:
     """The bare explore query, plus whatever else this student has been asking.
 
     Read off the student's cache index, which records the query behind every
     entry. Demand is the only honest source for this list — the alternative is
-    guessing at popular pivots, which warms entries nobody opens.
+    guessing at popular pivots and facets, which warms entries nobody opens.
 
     Capped, because the index grows with user requests: an unbounded list would
     let one student's exploration set the runtime of the whole job.
     """
-    base: Query = (None, None, limit)
-    queries: list[Query] = [base]
+    base = ExploreQuery.build(max_alumni=limit)
+    queries: list[ExploreQuery] = [base]
     try:
         entries = await cache.student_index_entries(student_id)
     except Exception:
@@ -78,13 +161,8 @@ async def queries_to_warm(student_id: str, limit: int) -> list[Query]:
     for params in entries.values():
         if params.get("kind") != cache.KIND_CONSTELLATION:
             continue
-        try:
-            variant: Query = (
-                params.get("fromMajor"),
-                params.get("toMajor"),
-                int(params.get("maxAlumni") or limit),
-            )
-        except (TypeError, ValueError):
+        variant = ExploreQuery.from_params(params, limit)
+        if variant is None:
             continue
         if variant not in queries:
             queries.append(variant)
@@ -153,28 +231,24 @@ async def warm_student(
     written: set[str] = set()
     clusters_built = 0
 
-    for from_major, to_major, variant_limit in queries:
-        key = cache.constellation_key(
-            student_id, query_hash(from_major, to_major, variant_limit)
-        )
+    for query in queries:
+        key = cache.constellation_key(student_id, query.cache_hash())
         # Same function the route calls, so a warmed entry is byte-identical
         # to what the request path would have produced for that key.
         response = build_constellation_for_query(
-            profile, corpus, from_major, to_major, variant_limit
+            profile,
+            corpus,
+            from_major=query.from_major,
+            to_major=query.to_major,
+            max_alumni=query.max_alumni,
+            interests=list(query.interests),
+            career_area=query.career_area,
+            major=query.major,
         )
         await cache.set_raw(key, cache.serialize_cached(response.model_dump(by_alias=True)))
-        await cache.track_student_key(
-            student_id,
-            key,
-            {
-                "kind": cache.KIND_CONSTELLATION,
-                "fromMajor": from_major,
-                "toMajor": to_major,
-                "maxAlumni": variant_limit,
-            },
-        )
+        await cache.track_student_key(student_id, key, query.as_params())
         written.add(key)
-        if (from_major, to_major, variant_limit) == (None, None, limit):
+        if query.is_broad and query.max_alumni == limit:
             clusters_built = len(response.clusters)
 
     # Everything else this student had cached is now stale — timelines and

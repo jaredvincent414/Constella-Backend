@@ -1,5 +1,6 @@
 from app.matching.clustering import Cluster, ClusterEdge, build_cluster_edges, build_clusters
 from app.matching.corpus import AlumnusView, Corpus, as_corpus, build_corpus, build_view
+from app.matching.facets import filter_by_facets, parse_interests
 from app.matching.pipeline import build_constellation, build_constellation_for_query
 from app.matching.programs import (
     ProgramPivot,
@@ -37,10 +38,12 @@ __all__ = [
     "build_semesters",
     "build_view",
     "detect_pivots",
+    "filter_by_facets",
     "filter_by_pivot_query",
     "first_major_pivot",
     "majors_at",
     "minors_at",
+    "parse_interests",
     "program_views",
     "score_corpus",
 ]

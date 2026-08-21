@@ -17,10 +17,11 @@ invalidates it alongside the constellation.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache, repository
+from app.api.responses import cached_json
 from app.auth import current_student
 from app.db import get_session
 from app.matching import StudentProfile, build_detail, score_corpus
@@ -112,6 +113,7 @@ async def delete_path(
 
 @router.post("/combine", response_model=CombineResponse, response_model_by_alias=True)
 async def combine(
+    http_request: Request,
     request: CombineRequest,
     student: Student = Depends(current_student),
     session: AsyncSession = Depends(get_session),
@@ -130,7 +132,7 @@ async def combine(
     except Exception:
         cached_raw = None
     if cached_raw is not None:
-        return Response(content=cached_raw, media_type="application/json")
+        return cached_json(cached_raw, http_request)
 
     profile = StudentProfile.from_model(student)
     # One query for the set. Ids outside the student's school simply don't come

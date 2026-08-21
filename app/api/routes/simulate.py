@@ -50,11 +50,13 @@ async def simulate(
     alumni = await repository.list_alumni(session, school_id=student.school_id)
     candidates = filter_by_pivot_query(alumni, from_major, request.to_major)
 
-    scored = score_corpus(profile, candidates)
     top_n = request.top_n or settings.simulator_top_n
+    # Cut inside the scorer: a What If keeps a handful of matches out of the
+    # whole filtered corpus, and the rest never need a breakdown built.
+    scored = score_corpus(profile, candidates, top_n=top_n)
 
     matches: list[SimulationMatch] = []
-    for item in scored[:top_n]:
+    for item in scored:
         pivot = item.alumnus.first_pivot
         # Set-diff pivot type (added/dropped/switched) from the program timeline;
         # matched to the stored pivot's term when there is one.

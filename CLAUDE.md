@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 202 tests
+pytest                                    # 224 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -118,6 +118,28 @@ a payload it already had. If you change how a response is encoded, change the
 serializer too — the point is that the cached copy is byte-identical to what
 the route would have computed.
 
+**Entries are stored gzipped and served gzipped.** A constellation is ~97% a
+repetitive array of alumni records: 78.8 KB becomes 4.1 KB, so the Redis working
+set and the bytes on the wire both drop ~19x, and the read path still doesn't
+touch the payload — the browser's `Accept-Encoding: gzip` means the stored bytes
+*are* the response. `app/api/responses.py` decompresses only for a client that
+says it can't take gzip. The Redis client is deliberately `decode_responses=False`
+for this reason; the index reads decode explicitly.
+
+Don't add Starlette's `GZipMiddleware` on top: as of 1.6.0 it does not check for
+an existing `Content-Encoding` and would compress these responses a second time.
+
+The rejected alternative was splitting the payload into a per-school alumnus
+dictionary plus a thin per-student list. 75% of a constellation is
+student-independent, so that saves ~4x — but it costs a second round trip and a
+join on every hit, to undo the property above.
+
+**Bumping `CACHE_VERSION` orphans the old keyspace, it doesn't free it.** Those
+entries stay resident until their TTL, which is now days. `invalidate_all_constellations`
+is deliberately version-agnostic (`FLUSH_PATTERN = "constella:*"`) so
+`DELETE /api/admin/cache` reclaims them — run it after a deploy that bumps the
+version. A v6 keyspace measured 3.6 MB against 10 KB of live v7 entries.
+
 **The per-student index is a hash of key → the query behind it**, not a set of
 keys. That is what lets the nightly job re-warm the queries a student actually
 ran instead of only the bare explore. `build_constellation_for_query` is shared
@@ -127,6 +149,41 @@ by the route and the job on purpose: both derive the same cache key from
 **The recompute job overwrites in place**, then clears what it didn't rewrite.
 Don't reintroduce a flush at the top of `precompute_all` — it makes every
 student cold for the length of the run and buys nothing.
+
+**The corpus is prepared once per school, not once per student.**
+[app/matching/corpus.py](app/matching/corpus.py) precomputes everything the
+scorer derives from an alumnus that doesn't depend on the student — normalized
+pre-pivot course codes, origin/final majors, minors, interest tokens, pivot
+year. `score_corpus` and `build_constellation` still accept a plain list and
+prepare one themselves, so single-student callers are unchanged; the nightly job
+builds one `Corpus` per school and reuses it. This took the job from ~549ms to
+~16ms per student.
+
+**`score_corpus(..., top_n=N)` cuts before materializing, not after.** Ranking
+needs only the total; the rounded components, the shared-course names, and the
+dataclass are built for survivors. `_rank` uses `argpartition` for the cut —
+which splits on the total alone and breaks ties arbitrarily, so it widens the
+candidate set to everything at or above the boundary before sorting. That is
+what makes it identical to slicing a full sort, ties included. If you change the
+tie-break, change it there. `TestTopNSelection` pins the boundary case.
+
+Two things measured and *not* done, so they don't get re-proposed as free wins:
+memoizing `soft_jaccard` across alumni (the real corpus has 487 distinct
+major-match keys per 611 alumni — ~10% for a real bit-identical-float risk), and
+vectorizing it (fuzzy text; can't be kept bit-identical by inspection).
+
+`build_corpus` must stay a *pure restatement* of the accessors it replaces — the
+moment a field is computed differently from its inline source it stops being an
+optimization and becomes an unreviewed change to the ranking.
+`tests/test_corpus.py` pins each field to its source. Note the set fields are
+deliberately not frozensets: `soft_jaccard` sums a `max()` per element, so
+iteration order fixes float summation order, and `frozenset(s)` need not iterate
+like `s`.
+
+**`Corpus` carries its `school_id` and the job asserts it against the student's.**
+Batching is what makes a cross-tenant mix-up possible at all, so the pairing is
+checked rather than trusted. `load_corpus` refuses `school_id=None` for the same
+reason `current_student` refuses a null tenant.
 
 **The response contains no geometry.** Radius, angle, and coordinates belong to
 the frontend; shipping them would freeze its layout model. A test asserts this.

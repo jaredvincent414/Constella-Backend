@@ -183,8 +183,31 @@ async def replace_student_courses(
     return refreshed
 
 
-async def list_students(session: AsyncSession) -> list[Student]:
-    stmt = select(Student).options(selectinload(Student.courses)).order_by(Student.id)
+async def list_students(session: AsyncSession, school_id: str | None = None) -> list[Student]:
+    """Students, optionally restricted to one school.
+
+    Programs are eager-loaded alongside courses because `StudentProfile.from_model`
+    reads both. Without them the precompute job had to re-fetch every student it
+    had just listed.
+    """
+    stmt = (
+        select(Student)
+        .options(selectinload(Student.courses), selectinload(Student.programs))
+        .order_by(Student.id)
+    )
+    if school_id is not None:
+        stmt = stmt.where(Student.school_id == school_id)
+    return list((await session.execute(stmt)).scalars().unique().all())
+
+
+async def list_student_school_ids(session: AsyncSession) -> list[str | None]:
+    """The distinct schools that have students, for batching the precompute job.
+
+    Returned including a possible `None`, deliberately — the caller has to decide
+    what to do with tenantless students rather than have them silently folded in
+    with someone else's.
+    """
+    stmt = select(Student.school_id).distinct().order_by(Student.school_id)
     return list((await session.execute(stmt)).scalars().all())
 
 

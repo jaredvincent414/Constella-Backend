@@ -9,6 +9,7 @@ produce the same score, which is what makes cached results safe to reuse.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 # Dropped before comparison because they carry no discriminating signal. Leaving
 # "science" in would make "Computer Science" and "Political Science" look 33%
@@ -32,16 +33,35 @@ STOPWORDS = frozenset(
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 
 
+# Memoized because the scorer calls these on the *same* handful of strings over
+# and over: every student is compared against every alumnus's major names,
+# career area, and interests, so a corpus of 600 alumni re-tokenizes the same
+# few hundred labels once per student. The functions are pure and deterministic
+# — the property this module already relied on for cached results to be safe to
+# reuse — so a cache changes nothing except how often the regex runs.
+#
+# maxsize is generous rather than unbounded: program and industry vocabularies
+# are small, but course codes and free-text interests are not, and an unbounded
+# cache on a long-lived worker is a leak with extra steps.
+
+
+@lru_cache(maxsize=16_384)
 def normalize(value: str) -> str:
     """Lowercase, collapse punctuation and whitespace to single spaces."""
     return _NON_WORD.sub(" ", value.lower()).strip()
 
 
-def tokenize(value: str) -> set[str]:
-    return {tok for tok in normalize(value).split() if tok and tok not in STOPWORDS}
+@lru_cache(maxsize=16_384)
+def tokenize(value: str) -> frozenset[str]:
+    """Frozen because the result is shared between callers now.
+
+    A plain set would let one caller's `|=` corrupt every later caller's view of
+    the same label. Equality with a plain set is unaffected.
+    """
+    return frozenset(tok for tok in normalize(value).split() if tok and tok not in STOPWORDS)
 
 
-def jaccard(left: set[str], right: set[str]) -> float:
+def jaccard(left: frozenset[str] | set[str], right: frozenset[str] | set[str]) -> float:
     """Intersection over union. Two empty sets are undefined, not identical."""
     if not left or not right:
         return 0.0
@@ -51,6 +71,7 @@ def jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union)
 
 
+@lru_cache(maxsize=65_536)
 def text_similarity(left: str | None, right: str | None) -> float:
     """Fuzzy agreement between two free-text labels, in 0..1.
 
@@ -72,6 +93,7 @@ def best_text_similarity(candidate: str | None, options: list[str]) -> float:
     return max(text_similarity(candidate, option) for option in options)
 
 
+@lru_cache(maxsize=65_536)
 def normalize_course_code(code: str) -> str:
     """'BIO 101', 'bio-101', and 'Bio101' are the same course."""
     return _NON_WORD.sub("", code.lower())

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache, repository
+from app.api.responses import cached_json
 from app.auth import current_student
 from app.db import get_session
 from app.matching import StudentProfile, build_detail, score_corpus
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api/alumni", tags=["alumni"])
 
 @router.get("/{alumnus_id}/timeline", response_model=AlumnusDetail, response_model_by_alias=True)
 async def get_timeline(
+    request: Request,
     alumnus_id: str,
     student: Student = Depends(current_student),
     session: AsyncSession = Depends(get_session),
@@ -42,7 +44,7 @@ async def get_timeline(
     except Exception:
         cached_raw = None  # Redis down — fall through and compute.
     if cached_raw is not None:
-        return Response(content=cached_raw, media_type="application/json")
+        return cached_json(cached_raw, request)
 
     alumnus = await repository.get_alumnus(session, alumnus_id, school_id=student.school_id)
     if alumnus is None:

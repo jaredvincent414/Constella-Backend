@@ -20,6 +20,10 @@ are expensive to get wrong:
 * **It re-warms the queries students actually ran**, not only the bare explore.
   A student whose page always sends a pivot query would otherwise miss the cache
   every single time while the job dutifully warmed an entry nothing requests.
+
+* **It loads each school's corpus once**, not once per student. Roughly 90% of
+  the old per-student cost was the corpus load and the ORM hydration behind it,
+  for a value identical across every student at that school.
 """
 
 from __future__ import annotations
@@ -29,11 +33,13 @@ import hashlib
 import time
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache, repository
 from app.config import settings
 from app.db import SessionLocal
-from app.matching import StudentProfile, build_constellation_for_query
+from app.matching import Corpus, StudentProfile, build_constellation_for_query, build_corpus
+from app.models import Student
 
 log = structlog.get_logger(__name__)
 
@@ -87,79 +93,118 @@ async def queries_to_warm(student_id: str, limit: int) -> list[Query]:
     return queries
 
 
-async def precompute_student(student_id: str, max_alumni: int | None = None) -> dict:
-    """Score and cluster the corpus for one student, then cache the result."""
-    started = time.perf_counter()
-    limit = max_alumni or settings.constellation_max_alumni
+async def precompute_student(
+    student_id: str, max_alumni: int | None = None, corpus: Corpus | None = None
+) -> dict:
+    """Score and cluster the corpus for one student, then cache the result.
 
+    `corpus` lets the batch job hand in a corpus it already built for this
+    student's school. Left out, one is loaded — which is what the admin
+    single-student endpoint wants.
+    """
     async with SessionLocal() as session:
         student = await repository.get_student(session, student_id)
         if student is None:
             raise LookupError(f"student {student_id!r} not found")
+        if corpus is None:
+            corpus = await load_corpus(session, student.school_id)
+        return await warm_student(session, student, corpus, max_alumni)
 
-        # Scoped exactly as the request path scopes it. A job that scored against
-        # every school would write a cross-tenant constellation into the cache,
-        # and the route would serve it on the next hit without ever touching the
-        # corpus itself — the isolation has to hold on both sides of Redis.
-        alumni = await repository.list_alumni(session, school_id=student.school_id)
-        profile = StudentProfile.from_model(student)
 
-        queries = await queries_to_warm(student_id, limit)
-        written: set[str] = set()
-        clusters_built = 0
+async def load_corpus(session: AsyncSession, school_id: str | None) -> Corpus:
+    """One school's alumni, prepared for scoring.
 
-        for from_major, to_major, variant_limit in queries:
-            key = cache.constellation_key(
-                student_id, query_hash(from_major, to_major, variant_limit)
-            )
-            # Same function the route calls, so a warmed entry is byte-identical
-            # to what the request path would have produced for that key.
-            response = build_constellation_for_query(
-                profile, alumni, from_major, to_major, variant_limit
-            )
-            await cache.set_raw(key, cache.serialize_cached(response.model_dump(by_alias=True)))
-            await cache.track_student_key(
-                student_id,
-                key,
-                {
-                    "kind": cache.KIND_CONSTELLATION,
-                    "fromMajor": from_major,
-                    "toMajor": to_major,
-                    "maxAlumni": variant_limit,
-                },
-            )
-            written.add(key)
-            if (from_major, to_major, variant_limit) == (None, None, limit):
-                clusters_built = len(response.clusters)
+    Refuses a null tenant. `list_alumni(school_id=None)` means *unscoped*, so
+    building a corpus for a tenantless student would hand them every school's
+    records — the same fail-open `current_student` exists to prevent on the
+    request path.
+    """
+    if school_id is None:
+        raise ValueError("refusing to build an unscoped corpus")
+    alumni = await repository.list_alumni(session, school_id=school_id)
+    return build_corpus(alumni, school_id=school_id)
 
-        # Everything else this student had cached is now stale — timelines and
-        # combined paths included, since both are derived from the corpus that
-        # just changed. Sparing what we just wrote is what keeps the rebuild
-        # from opening a window where the constellation is missing.
-        await cache.invalidate_student(student_id, keep=written)
 
-        duration_ms = (time.perf_counter() - started) * 1000
+async def warm_student(
+    session: AsyncSession,
+    student: Student,
+    corpus: Corpus,
+    max_alumni: int | None = None,
+) -> dict:
+    """Warm one student's cache entries against an already-prepared corpus."""
+    started = time.perf_counter()
+    limit = max_alumni or settings.constellation_max_alumni
+    student_id = student.id
 
-        await repository.record_run(
-            session,
-            scope="student",
-            student_id=student_id,
-            alumni_scored=len(alumni),
-            clusters_built=clusters_built,
-            duration_ms=duration_ms,
+    # Scoped exactly as the request path scopes it. A job that scored against
+    # every school would write a cross-tenant constellation into the cache, and
+    # the route would serve it on the next hit without ever touching the corpus
+    # itself — the isolation has to hold on both sides of Redis. Now that the
+    # corpus is built once and passed around, this is the assertion that the
+    # batching didn't quietly hand a student the wrong school.
+    if corpus.school_id != student.school_id:
+        raise ValueError(
+            f"corpus is for school {corpus.school_id!r}, "
+            f"student {student_id!r} belongs to {student.school_id!r}"
         )
+
+    profile = StudentProfile.from_model(student)
+    queries = await queries_to_warm(student_id, limit)
+    written: set[str] = set()
+    clusters_built = 0
+
+    for from_major, to_major, variant_limit in queries:
+        key = cache.constellation_key(
+            student_id, query_hash(from_major, to_major, variant_limit)
+        )
+        # Same function the route calls, so a warmed entry is byte-identical
+        # to what the request path would have produced for that key.
+        response = build_constellation_for_query(
+            profile, corpus, from_major, to_major, variant_limit
+        )
+        await cache.set_raw(key, cache.serialize_cached(response.model_dump(by_alias=True)))
+        await cache.track_student_key(
+            student_id,
+            key,
+            {
+                "kind": cache.KIND_CONSTELLATION,
+                "fromMajor": from_major,
+                "toMajor": to_major,
+                "maxAlumni": variant_limit,
+            },
+        )
+        written.add(key)
+        if (from_major, to_major, variant_limit) == (None, None, limit):
+            clusters_built = len(response.clusters)
+
+    # Everything else this student had cached is now stale — timelines and
+    # combined paths included, since both are derived from the corpus that
+    # just changed. Sparing what we just wrote is what keeps the rebuild
+    # from opening a window where the constellation is missing.
+    await cache.invalidate_student(student_id, keep=written)
+
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    await repository.record_run(
+        session,
+        scope="student",
+        student_id=student_id,
+        alumni_scored=len(corpus),
+        clusters_built=clusters_built,
+        duration_ms=duration_ms,
+    )
 
     log.info(
         "precomputed_student",
         student_id=student_id,
-        alumni=len(alumni),
+        alumni=len(corpus),
         queries=len(queries),
         clusters=clusters_built,
         duration_ms=round(duration_ms, 1),
     )
     return {
         "student_id": student_id,
-        "alumni_scored": len(alumni),
+        "alumni_scored": len(corpus),
         "queries_warmed": len(queries),
         "clusters": clusters_built,
         "duration_ms": round(duration_ms, 1),
@@ -180,20 +225,40 @@ async def precompute_all() -> dict:
     started = time.perf_counter()
 
     async with SessionLocal() as session:
-        students = await repository.list_students(session)
+        school_ids = await repository.list_student_school_ids(session)
 
-    results = []
-    for student in students:
-        try:
-            results.append(await precompute_student(student.id))
-        except Exception as exc:  # keep going; one bad profile shouldn't stop the batch
-            log.error("precompute_failed", student_id=student.id, error=str(exc))
-            results.append({"student_id": student.id, "error": str(exc)})
+    results: list[dict] = []
+    students_seen = 0
+    for school_id in school_ids:
+        if school_id is None:
+            # Tenantless students can't authenticate (`current_student` 403s), and
+            # a corpus for them would be unscoped. Skip loudly rather than build
+            # one.
+            log.warning("precompute_skipped_tenantless_students")
+            continue
+
+        # One session and one corpus per school. The corpus is the same for every
+        # student at that school, and it used to be loaded and hydrated once per
+        # student — the dominant cost of the whole job.
+        async with SessionLocal() as session:
+            corpus = await load_corpus(session, school_id)
+            students = await repository.list_students(session, school_id=school_id)
+            students_seen += len(students)
+            log.info("precompute_school", school_id=school_id, students=len(students),
+                     alumni=len(corpus))
+
+            for student in students:
+                try:
+                    results.append(await warm_student(session, student, corpus))
+                except Exception as exc:  # one bad profile shouldn't stop the batch
+                    log.error("precompute_failed", student_id=student.id, error=str(exc))
+                    results.append({"student_id": student.id, "error": str(exc)})
 
     duration_ms = (time.perf_counter() - started) * 1000
-    log.info("precomputed_all", students=len(students), duration_ms=round(duration_ms, 1))
+    log.info("precomputed_all", students=students_seen, duration_ms=round(duration_ms, 1))
     return {
-        "students": len(students),
+        "students": students_seen,
+        "schools": len([s for s in school_ids if s is not None]),
         "duration_ms": round(duration_ms, 1),
         "results": results,
     }

@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.auth import hash_token
 from app.config import settings
 from app.db import SessionLocal
+from app.jobs.recompute import load_corpus, warm_student
 from app.main import app
+from app.matching import build_corpus
 from app.models import (
     Alumnus,
     AlumnusCourse,
@@ -293,6 +295,46 @@ async def test_saved_paths_are_scored_against_the_caller(client, seeded):
     assert listed.status_code == 200
     detail = await client.get(f"/api/alumni/{ALUM_A}/timeline", headers=auth(TOKEN_A))
     assert listed.json()[0]["alumnus"] == detail.json()
+
+
+async def test_precompute_refuses_a_corpus_from_another_school(seeded):
+    """The batch job builds one corpus per school and reuses it for that school's
+    students. That is only safe while the pairing is checked — a mis-grouped
+    batch would write a cross-tenant constellation into Redis, and the route
+    would serve it on the next hit without ever touching the corpus."""
+    async with SessionLocal() as session:
+        other_school = await load_corpus(session, SCHOOL_B)
+        student = (
+            await session.execute(select(Student).where(Student.id == STUDENT_A))
+        ).scalar_one()
+
+        with pytest.raises(ValueError, match="school"):
+            await warm_student(session, student, other_school)
+
+
+async def test_precompute_refuses_an_unscoped_corpus(seeded):
+    """`list_alumni(school_id=None)` means every school. A tenantless student
+    must not reach it — the same fail-closed rule `current_student` enforces."""
+    async with SessionLocal() as session:
+        with pytest.raises(ValueError, match="unscoped"):
+            await load_corpus(session, None)
+
+
+async def test_precomputed_constellation_only_contains_your_school(client, seeded):
+    """The cached copy has to hold the same boundary the live response does."""
+    async with SessionLocal() as session:
+        student = (
+            await session.execute(select(Student).where(Student.id == STUDENT_A))
+        ).scalar_one()
+        corpus = build_corpus(
+            (await load_corpus(session, SCHOOL_A)).alumni, school_id=SCHOOL_A
+        )
+        await warm_student(session, student, corpus)
+
+    served = await client.get("/api/constellation", headers=auth(TOKEN_A))
+    assert served.status_code == 200
+    assert served.json()["meta"]["cached"] is True
+    assert ALUM_B not in {a["id"] for a in served.json()["alumni"]}
 
 
 async def test_constellation_only_contains_your_school(client, seeded):

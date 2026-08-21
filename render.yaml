@@ -1,0 +1,92 @@
+# Render blueprint for the Constella backend.
+#
+# Covers the API, Postgres, Redis, and the nightly precompute. The frontend is a
+# separate repository and is not described here.
+#
+# Two things this file cannot do for you, both one-offs after the first deploy:
+#
+#   1. Load a corpus. The database comes up empty, and an empty corpus renders
+#      as a blank constellation rather than an error:
+#          python -m app.ingest --source midfield --alumni 1500
+#      That needs the MIDFIELD files, which are not in this repo — run it from a
+#      shell with the data mounted, or seed synthetic data instead:
+#          python -m scripts.seed --alumni 240
+#
+#   2. Warm the cache the first time:
+#          python -m app.jobs.recompute
+#      The cron below keeps it warm afterwards. Skip it and the first visitor
+#      pays a full inline recompute (~600ms) instead of a cache hit (~5ms).
+
+databases:
+  - name: constella-postgres
+    databaseName: constella
+    user: constella
+    plan: basic-256mb
+
+services:
+  - type: redis
+    name: constella-redis
+    plan: starter
+    # The cache is an optimization the API degrades gracefully without, but the
+    # working set is small (~5 KB per cached constellation, gzipped) and
+    # evicting entries early just means recomputing them.
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+  - type: web
+    name: constella-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health/ready
+    # Migrations run here, once per deploy, rather than in the container's start
+    # command: a start-command migration races itself the moment there is more
+    # than one instance, and it makes rolling back by redeploying an older image
+    # impossible.
+    preDeployCommand: alembic upgrade head
+    envVars:
+      # Render emits `postgres://`, which selects the synchronous psycopg driver
+      # this app does not install. `Settings._require_async_driver` rewrites the
+      # scheme, so this can be wired straight through.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: constella-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: constella-redis
+          property: connectionString
+      # The exact origin the frontend is served from, scheme included. A
+      # mismatch here is the most common reason a deployed UI shows an empty
+      # page with CORS errors in the console.
+      - key: CORS_ORIGINS
+        sync: false
+      # Generated once and stored by Render. Unset would mean the admin surface
+      # is DISABLED (503) rather than open — safe, but then the cache flush and
+      # manual recompute endpoints are unavailable.
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: LOG_LEVEL
+        value: INFO
+
+  - type: cron
+    name: constella-recompute
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    # Daily. CACHE_TTL_SECONDS defaults to 30h specifically so an entry outlives
+    # the gap between runs — a TTL shorter than the job period leaves the cache
+    # cold for most of the day. If you change this cadence, change that too.
+    schedule: "0 7 * * *"
+    dockerCommand: python -m app.jobs.recompute
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: constella-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: constella-redis
+          property: connectionString

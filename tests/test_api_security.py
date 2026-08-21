@@ -426,6 +426,36 @@ async def test_simulate_runs_as_the_caller(client, seeded):
         assert card["id"] != ALUM_B
 
 
+async def test_profile_matches_the_frontend_contract(client, seeded):
+    """The Dashboard and sidebar read this payload directly."""
+    response = await client.get("/api/students/me", headers=auth(TOKEN_A))
+    assert response.status_code == 200
+    body = response.json()
+
+    assert set(body) >= {
+        "id",
+        "schoolId",
+        "school",
+        "firstName",
+        "lastName",
+        "email",
+        "currentYear",
+        "declaredMajor",
+        "interests",
+        "coursesCompleted",
+    }
+    assert body["firstName"] == "Ada"
+    assert body["school"] == "Test Security School A"
+    assert body["currentYear"] == "sophomore"
+
+    course = body["coursesCompleted"][0]
+    assert set(course) == {"id", "name", "semester", "semesterIndex"}
+    # The label is derived from the index, which stays the source of truth for
+    # timing — the client never has to parse a label back into an ordering.
+    assert course["semesterIndex"] == 0
+    assert course["semester"] == "Freshman Fall"
+
+
 # --------------------------------------------------------------------------
 # Registration and profile
 # --------------------------------------------------------------------------
@@ -489,7 +519,7 @@ async def test_profile_update_is_partial(client, seeded):
     )
     assert updated.status_code == 200
     body = updated.json()
-    assert body["major"] == "Public Health"
+    assert body["declaredMajor"] == "Public Health"
     # Untouched fields survive a partial update.
     assert body["intendedDirection"] == "Health Policy"
     assert body["interests"] == ["Global Health Club"]
@@ -525,7 +555,8 @@ async def test_courses_replace_rather_than_merge(client, seeded):
         headers=auth(TOKEN_A),
     )
     assert response.status_code == 200
-    codes = [c["code"] for c in response.json()["courses"]]
+    # `id` is the course code, which is what PUT /me/courses takes as `code`.
+    codes = [c["id"] for c in response.json()["coursesCompleted"]]
     assert codes == ["PH 310"]  # the seeded BIO 101 is gone
 
 

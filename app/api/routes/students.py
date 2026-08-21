@@ -28,7 +28,8 @@ from app.auth import current_student, new_token
 from app.db import get_session
 from app.jobs import recompute
 from app.matching.programs import student_majors, student_minors
-from app.models import School, Student
+from app.matching.timeline import course_display_name
+from app.models import School, Student, semester_label
 from app.schemas import (
     CoursesUpdate,
     ProfileUpdate,
@@ -37,6 +38,7 @@ from app.schemas import (
     SchoolOut,
     StudentCourseOut,
     StudentOut,
+    split_name,
 )
 
 log = structlog.get_logger(__name__)
@@ -59,22 +61,29 @@ async def _invalidate(student_id: str) -> None:
 
 def _to_out(student: Student, school: School | None) -> StudentOut:
     majors = sorted(student_majors(student))
+    first_name, last_name = split_name(student.name)
     return StudentOut(
         id=student.id,
         school_id=student.school_id,
-        school_name=school.name if school else None,
-        name=student.name,
+        school=school.name if school else None,
+        first_name=first_name,
+        last_name=last_name,
         email=student.email,
-        year=student.year.value,
+        current_year=student.year.value,
         # `student_majors` is set-valued (double majors are two rows); the profile
         # surfaces the primary declaration, so take the first of the sorted set.
-        major=majors[0] if majors else None,
+        declared_major=majors[0] if majors else None,
         minors=sorted(student_minors(student)),
         intended_direction=student.intended_direction,
         interests=list(student.interests or []),
-        courses=[
+        courses_completed=[
             StudentCourseOut(
-                code=c.course_code, name=c.course_name, semester_index=c.semester_index
+                id=c.course_code,
+                # Same fallback the alumni timeline uses: a blank title would
+                # render as an empty pill, and the code is never blank.
+                name=course_display_name(c),
+                semester=semester_label(c.semester_index),
+                semester_index=c.semester_index,
             )
             for c in sorted(student.courses, key=lambda c: (c.semester_index, c.course_code))
         ],

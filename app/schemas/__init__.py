@@ -40,6 +40,7 @@ from app.schemas.students import (
     StudentCourseIn,
     StudentCourseOut,
     StudentOut,
+    split_name,
 )
 
 __all__ = [
@@ -77,6 +78,7 @@ __all__ = [
     "StudentContext",
     "StudentCourseIn",
     "StudentCourseOut",
+    "split_name",
     "StudentOut",
     "TimelineCourse",
     "TimelineSemester",

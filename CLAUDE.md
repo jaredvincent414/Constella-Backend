@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 285 tests
+pytest                                    # 291 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -276,6 +276,12 @@ when nothing pivoted rather than naming a peak over an empty set.
 catalogue entries and not others — so `course_display_name` is the only way a
 course should reach a payload. Reading `course_name` directly renders empty
 pills.
+
+**`firstName`/`lastName` are split from one `name` column.** `students.name`
+is all registration ever collected; the frontend's signup form collects two.
+`split_name` is lossy by construction ("Mary Jane Watson" gives a last name of
+"Jane Watson") and lives in the view on purpose — the columns should land with
+the signup work, when there is finally something to put in them.
 
 ## Changing the scoring formula
 

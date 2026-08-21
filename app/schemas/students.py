@@ -43,9 +43,37 @@ class RegisterRequest(CamelModel):
         return normalized
 
 
+def split_name(full_name: str | None) -> tuple[str | None, str | None]:
+    """"Ada Lovelace" -> ("Ada", "Lovelace").
+
+    An interim measure, and a lossy one: "Mary Jane Watson" gives a last name of
+    "Jane Watson". The students table stores one `name` column because that is
+    all registration ever collected, while the frontend's signup form collects
+    the two separately — so the columns should land with that work, when there
+    is finally something to put in them. Splitting here rather than storing a
+    guess keeps the lossy step in the view, where it can be corrected.
+    """
+    if not full_name or not full_name.strip():
+        return None, None
+    first, _, rest = full_name.strip().partition(" ")
+    return first, rest.strip() or None
+
+
 class StudentCourseOut(CamelModel):
-    code: str
+    """`id` is the course code, which is what `PUT /me/courses` takes as `code`.
+
+    One identifier rather than two names for the same value: the code is already
+    unique per student (the table has a unique index on it), and the frontend
+    keys its list on `id`. Read a transcript, edit it, send it back — `id` maps
+    straight to `code`.
+    """
+
+    id: str = Field(description="The course code — round-trips as `code` on write")
     name: str
+    semester: str = Field(description='Derived label, e.g. "Sophomore Spring"')
+    # `semesterIndex` stays the source of truth for timing; the label above is
+    # derived from it. Keeping both means the client never has to parse a label
+    # back into an ordering.
     semester_index: int
 
 
@@ -59,16 +87,22 @@ class StudentOut(CamelModel):
     """The authenticated student's own profile."""
 
     id: str
+    # The slug stays alongside the display name: it is the tenant identifier
+    # every alumni read is scoped by, and the one value support needs when a
+    # constellation looks wrong.
     school_id: str | None
-    school_name: str | None
-    name: str | None
+    school: str | None = Field(description="Display name of the student's school")
+    first_name: str | None
+    last_name: str | None
     email: str | None
-    year: str
-    major: str | None = Field(description="Primary declared major, from student_program")
+    current_year: str
+    declared_major: str | None = Field(
+        description="Primary declared major, from student_program"
+    )
     minors: list[str]
     intended_direction: str | None
     interests: list[str]
-    courses: list[StudentCourseOut]
+    courses_completed: list[StudentCourseOut]
 
 
 class RegisterResponse(CamelModel):

@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 186 tests
+pytest                                    # 202 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -104,6 +104,29 @@ FastAPI`. On a cache miss the API computes inline and backfills, so a cold or
 unavailable Redis costs latency, not availability. Cache writes are always
 wrapped in `try/except` — caching is an optimization and must never fail a
 request.
+
+**`CACHE_TTL_SECONDS` must exceed the gap between recompute runs.** A TTL
+shorter than the job period is the worst case available: entries expire long
+before the job refreshes them, so the cache sits cold for most of the day and
+nearly every request pays a full inline recompute. The default (30h) assumes a
+daily job.
+
+**A cache hit returns the stored bytes.** Entries are written already stamped
+`meta.cached: true` (`cache.serialize_cached`) and served with
+`Response(content=raw)`, so a hit never parses, revalidates, and re-serializes
+a payload it already had. If you change how a response is encoded, change the
+serializer too — the point is that the cached copy is byte-identical to what
+the route would have computed.
+
+**The per-student index is a hash of key → the query behind it**, not a set of
+keys. That is what lets the nightly job re-warm the queries a student actually
+ran instead of only the bare explore. `build_constellation_for_query` is shared
+by the route and the job on purpose: both derive the same cache key from
+(fromMajor, toMajor, limit), so they have to agree on what that key *means*.
+
+**The recompute job overwrites in place**, then clears what it didn't rewrite.
+Don't reintroduce a flush at the top of `precompute_all` — it makes every
+student cold for the length of the run and buys nothing.
 
 **The response contains no geometry.** Radius, angle, and coordinates belong to
 the frontend; shipping them would freeze its layout model. A test asserts this.

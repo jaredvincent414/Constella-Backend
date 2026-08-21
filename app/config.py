@@ -11,7 +11,25 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://constella:constella@localhost:5433/constella"
     redis_url: str = "redis://localhost:6380/0"
 
-    cache_ttl_seconds: int = 3600
+    # Must outlive the interval between precompute runs. A TTL shorter than the
+    # job period is the worst of both worlds: entries expire long before the job
+    # refreshes them, so the cache is cold for most of the day and nearly every
+    # request pays a full inline recompute. 30h leaves headroom over a daily job
+    # — raise it if the job runs less often than that.
+    cache_ttl_seconds: int = 108_000
+
+    # Single-flight. On a miss, one caller computes and the rest wait for it
+    # rather than all recomputing the same payload. The lock TTL bounds how long
+    # a crashed holder can block others; the wait bounds how long a follower
+    # waits before giving up and computing anyway. Neither can fail a request.
+    cache_lock_ttl_seconds: int = 30
+    cache_lock_wait_seconds: float = 2.0
+
+    # Ceiling on how many query variants the nightly job re-warms per student.
+    # The list comes from what students actually requested, which makes it
+    # user-controlled growth — a cap is what keeps one heavy explorer from
+    # stretching the whole job.
+    precompute_max_queries_per_student: int = 8
 
     constellation_min_alumni: int = 50
     constellation_max_alumni: int = 200

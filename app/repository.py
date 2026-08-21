@@ -228,6 +228,27 @@ async def get_alumnus(
     return (await session.execute(stmt)).scalars().unique().one_or_none()
 
 
+async def list_alumni_by_ids(
+    session: AsyncSession, alumnus_ids: list[str], school_id: str | None = None
+) -> list[Alumnus]:
+    """Several alumni in one query, in the order requested.
+
+    The saved-paths and combine routes hold a list of ids and need the full
+    object for each. Fetching them one at a time is six round trips per id once
+    the eager loads are counted — an `IN` costs the same six for the whole list.
+
+    Scoped like `get_alumnus`: an id outside `school_id` is simply absent from
+    the result, so the caller 404s without confirming the record exists.
+    """
+    if not alumnus_ids:
+        return []
+    stmt = _alumni_query().where(Alumnus.id.in_(set(alumnus_ids)))
+    if school_id is not None:
+        stmt = stmt.where(Alumnus.school_id == school_id)
+    found = {a.id: a for a in (await session.execute(stmt)).scalars().unique().all()}
+    return [found[aid] for aid in alumnus_ids if aid in found]
+
+
 async def count_alumni(session: AsyncSession) -> int:
     from sqlalchemy import func
 

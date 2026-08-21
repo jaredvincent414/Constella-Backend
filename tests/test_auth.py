@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
+from app import cache
 from app.auth import _bearer, hash_token, new_token, require_admin
 from app.config import settings
 
@@ -117,3 +118,73 @@ async def test_student_token_does_not_open_admin(admin_key):
     with pytest.raises(HTTPException) as exc:
         await require_admin(x_admin_key=None, authorization=f"Bearer {student_token}")
     assert exc.value.status_code == 403
+
+
+class TestPrincipalCacheKeying:
+    """The cached principal is a credential-adjacent store. What it holds, and
+    what it refuses to hold, is the whole security surface of the optimization."""
+
+    def test_key_is_derived_from_the_token_hash_not_the_token(self):
+        """A second store of plaintext tokens would be a second thing to leak.
+
+        Keying on the hash the database already holds means a Redis dump
+        discloses exactly what a database dump would, and no more.
+        """
+        token = "a-real-looking-token"
+        key = cache.principal_key(hash_token(token))
+        assert token not in key
+        assert hash_token(token) in key
+
+    def test_distinct_tokens_get_distinct_keys(self):
+        assert cache.principal_key(hash_token("a")) != cache.principal_key(hash_token("b"))
+
+    def test_key_is_cache_versioned(self):
+        # A version bump has to orphan these along with everything else, or a
+        # format change would be read back under the old assumptions.
+        assert cache.principal_key("abc").startswith(f"constella:{cache.CACHE_VERSION}:")
+
+
+class TestPrincipalCacheRefusesATenantlessCaller:
+    """`school_id=None` means *unscoped* everywhere downstream. Caching one
+    would be the fail-open case `current_student` exists to prevent, with a TTL
+    attached — so neither side of the cache will carry it."""
+
+    async def test_set_refuses_a_null_school(self, monkeypatch):
+        written = []
+
+        class FakeClient:
+            async def set(self, *args, **kwargs):
+                written.append(args)
+
+        monkeypatch.setattr(cache, "get_client", lambda: FakeClient())
+        await cache.set_principal("hash", "stu-1", None, 60)
+        await cache.set_principal("hash", "stu-1", "", 60)
+        await cache.set_principal("hash", "", "school-a", 60)
+        assert written == []
+
+    async def test_set_refuses_a_non_positive_ttl(self, monkeypatch):
+        written = []
+
+        class FakeClient:
+            async def set(self, *args, **kwargs):
+                written.append(args)
+
+        monkeypatch.setattr(cache, "get_client", lambda: FakeClient())
+        await cache.set_principal("hash", "stu-1", "school-a", 0)
+        assert written == []
+
+    async def test_get_rejects_an_entry_without_a_school(self, monkeypatch):
+        class FakeClient:
+            async def get(self, _key):
+                return b"stu-1\x1f"
+
+        monkeypatch.setattr(cache, "get_client", lambda: FakeClient())
+        assert await cache.get_principal("hash") is None
+
+    async def test_get_round_trips_a_valid_entry(self, monkeypatch):
+        class FakeClient:
+            async def get(self, _key):
+                return b"stu-1\x1fschool-a"
+
+        monkeypatch.setattr(cache, "get_client", lambda: FakeClient())
+        assert await cache.get_principal("hash") == ("stu-1", "school-a")

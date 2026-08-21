@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 224 tests
+pytest                                    # 243 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -98,6 +98,37 @@ the README's "What this is not". Don't quietly close one halfway — either do i
 properly or leave the honest note.
 
 ## Architecture notes
+
+**A cached read touches Postgres for nothing.** `current_principal`
+([app/auth.py](app/auth.py)) resolves a token to `(student_id, school_id)` —
+all the tenant boundary needs — and caches it, and the cached routes take no
+session dependency, because FastAPI resolves dependencies eagerly and one would
+check out a connection on every hit. Verified: ten constellation hits, ten
+timeline hits, and ten 304s all issue **0 SQL statements**. That is an
+availability property as much as a latency one; keep it when adding routes.
+
+`current_student` is the uncached form and still loads a live ORM instance —
+use it for anything that reads a full profile or writes one. Never cache one:
+a reconstituted instance is detached and unsafe to write through.
+
+**The auth cache is not revocation.** `auth_cache_ttl_seconds` (60s) is the
+window in which a deleted student can still authenticate. `set_principal`
+refuses to store a null tenant, so the fail-closed 403 can't be cached into a
+fail-open one. DB-backed tests that reuse a fixed token must clear it —
+`tests/test_api_security.py` does this in `_cleanup`, or a principal outlives
+the row it names.
+
+**`pool_pre_ping` is off.** It costs a `SELECT 1` per connection checkout (~0.7ms
+measured on every request that touches Postgres); `pool_recycle` covers the
+idled-out-connection case it usually guards. Turn it back on behind a proxy or
+failover pair, where connections drop unannounced.
+
+**Cached responses carry an ETag and revalidate.** `private, no-cache` means
+"store it, always check" — so a returning client gets a 304 with no body
+instead of the payload, and never sees something stale. The ETag includes the
+encoding, because a gzip body and an identity body are different entities. Only
+the *cached* path sets one; a miss returns the freshly built model, whose
+`meta.cached` is false.
 
 **The pipeline.** `Postgres → background job (score + cluster) → Redis →
 FastAPI`. On a cache miss the API computes inline and backfills, so a cold or

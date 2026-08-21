@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from app.config import settings
 from app.matching.clustering import DEFAULT_MAX_CLUSTERS, build_cluster_edges, build_clusters
+from app.matching.corpus import as_corpus
 from app.matching.explain import explain_match
 from app.matching.outcomes import build_outcome
 from app.matching.programs import program_views
@@ -45,13 +46,16 @@ def build_constellation(
     """Produce the full constellation payload.
 
     Returns the response alongside the scored list, so a caller that also needs
-    per-alumnus breakdowns doesn't have to score twice.
+    per-alumnus breakdowns doesn't have to score twice. That list is the *kept*
+    top-N, not the whole corpus — the cut happens inside the scorer now, so the
+    records below it are never materialized.
     """
     limit = max_alumni or settings.constellation_max_alumni
 
-    scored = score_corpus(profile, alumni)
-    total_candidates = len(scored)
-    top = scored[:limit]
+    corpus = as_corpus(alumni)
+    total_candidates = len(corpus)
+    top = score_corpus(profile, corpus, top_n=limit)
+    scored = top
 
     clusters = build_clusters(top, max_clusters=max_clusters)
     edges, edges_before_pruning = build_cluster_edges(

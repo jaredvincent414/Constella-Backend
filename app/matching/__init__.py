@@ -1,4 +1,5 @@
 from app.matching.clustering import Cluster, ClusterEdge, build_cluster_edges, build_clusters
+from app.matching.corpus import AlumnusView, Corpus, as_corpus, build_corpus, build_view
 from app.matching.pipeline import build_constellation, build_constellation_for_query
 from app.matching.programs import (
     ProgramPivot,
@@ -18,18 +19,23 @@ from app.matching.scoring import (
 from app.matching.timeline import build_detail, build_semesters
 
 __all__ = [
+    "AlumnusView",
     "Cluster",
     "ClusterEdge",
+    "Corpus",
     "ProgramPivot",
     "ProgramView",
     "ScoredAlumnus",
     "StudentProfile",
+    "as_corpus",
     "build_cluster_edges",
     "build_clusters",
     "build_constellation",
     "build_constellation_for_query",
+    "build_corpus",
     "build_detail",
     "build_semesters",
+    "build_view",
     "detect_pivots",
     "filter_by_pivot_query",
     "first_major_pivot",

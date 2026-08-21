@@ -381,7 +381,7 @@ the provider's URL can be wired straight through.
 | `DELETE` | `/api/paths/{id}` | student | Remove a saved path |
 | `POST` | `/api/paths/combine` | student | Merge 2+ saved paths into one plan |
 | `GET` | `/api/search?q=` | student | Typeahead across majors, clusters, and alumni |
-| `GET` | `/health/ready` | — | Postgres + Redis status |
+| `GET` | `/health/ready` | — | Postgres + Redis status; 503 if Postgres is down |
 | `POST` | `/api/admin/recompute` | admin | Rebuild all cached constellations |
 | `POST` | `/api/admin/recompute/{studentId}` | admin | Rebuild or invalidate one student |
 | `DELETE` | `/api/admin/cache` | admin | Flush cached constellations |
@@ -490,7 +490,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               390 tests; only the security suite needs Postgres
+tests/               395 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

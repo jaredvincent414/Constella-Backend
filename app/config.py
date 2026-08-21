@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # means one thing in this codebase rather than two.
     facet_match_threshold: float = 0.3
 
+    # Collapse a burst of identical activity entries. Toggling a filter three
+    # times should leave one line in a four-item feed, not three; coming back
+    # tomorrow should still leave a new one.
+    activity_dedupe_seconds: int = 900
+    activity_feed_limit: int = 20
+
     constellation_min_alumni: int = 50
     constellation_max_alumni: int = 200
     simulator_top_n: int = 5

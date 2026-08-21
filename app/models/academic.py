@@ -74,6 +74,20 @@ class ProgramRole(enum.StrEnum):
 MAJOR_ROLES = frozenset({ProgramRole.primary, ProgramRole.second_major})
 
 
+class ActivityKind(enum.StrEnum):
+    """What a student did. Deliberately coarse: the feed is a memory aid, not
+    an audit trail, and a vocabulary this small is one the UI can render without
+    a lookup table."""
+
+    explored = "explored"
+    saved_path = "saved_path"
+    removed_path = "removed_path"
+    combined_paths = "combined_paths"
+    simulated = "simulated"
+    updated_profile = "updated_profile"
+    updated_courses = "updated_courses"
+
+
 class Provenance(enum.StrEnum):
     """Where a piece of data came from. `reported` is from the source of record;
     `derived` is inferred by us from other data we hold (e.g. a de facto minor);
@@ -461,6 +475,41 @@ class SavedPath(Base):
 
     __table_args__ = (
         Index("ix_saved_paths_student_alumnus", "student_id", "alumnus_id", unique=True),
+    )
+
+
+class StudentActivity(Base):
+    """A student's own recent actions, for the Dashboard feed.
+
+    Scoped to one student and readable only by them — there is no route that
+    takes a student id, so this is unexpressible as a way to watch someone else.
+
+    `label` is stored rendered ("Explored the Health Policy cluster") rather than
+    assembled at read time. The feed is a record of what the student did *then*:
+    if a cluster is renamed or a saved path is deleted, the entry should still
+    say what it said, and rebuilding the sentence from today's data would
+    quietly rewrite history.
+    """
+
+    __tablename__ = "student_activity"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    student_id: Mapped[str] = mapped_column(
+        ForeignKey("students.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[ActivityKind] = mapped_column(
+        Enum(ActivityKind, name="activity_kind", native_enum=False, length=32),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        # The only query this table serves: one student's newest entries. A
+        # composite descending index answers it from the index alone.
+        Index("ix_student_activity_recent", "student_id", "created_at"),
     )
 
 

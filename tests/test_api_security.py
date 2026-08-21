@@ -195,6 +195,7 @@ def _alumni_ids(payload: dict) -> set[str]:
         ("post", "/api/paths", {"alumnusId": ALUM_A}),
         ("post", "/api/paths/combine", {"pathIds": [1, 2]}),
         ("get", "/api/students/me", None),
+        ("get", "/api/students/me/activity", None),
         ("put", "/api/students/me", {"year": "junior"}),
         ("put", "/api/students/me/courses", {"courses": []}),
     ],
@@ -454,6 +455,43 @@ async def test_profile_matches_the_frontend_contract(client, seeded):
     # timing — the client never has to parse a label back into an ordering.
     assert course["semesterIndex"] == 0
     assert course["semester"] == "Freshman Fall"
+
+
+async def test_activity_feed_is_per_student(client, seeded):
+    """A feed is a record of one person's actions. There is no route that takes
+    a student id, so reading someone else's is unexpressible rather than denied
+    — this pins that the rows are scoped too."""
+    await client.put(
+        "/api/students/me", json={"intendedDirection": "Health Policy"}, headers=auth(TOKEN_A)
+    )
+
+    mine = await client.get("/api/students/me/activity", headers=auth(TOKEN_A))
+    theirs = await client.get("/api/students/me/activity", headers=auth(TOKEN_B))
+    assert mine.status_code == 200 and theirs.status_code == 200
+    assert len(mine.json()) == 1
+    assert theirs.json() == []
+
+
+async def test_activity_collapses_a_burst_of_identical_actions(client, seeded):
+    """Toggling the same control three times should leave one line, not three."""
+    for _ in range(3):
+        await client.put(
+            "/api/students/me", json={"intendedDirection": "Health Policy"}, headers=auth(TOKEN_A)
+        )
+    feed = (await client.get("/api/students/me/activity", headers=auth(TOKEN_A))).json()
+    assert [e["kind"] for e in feed] == ["updated_profile"]
+
+
+async def test_activity_is_newest_first_and_capped(client, seeded):
+    await client.put("/api/students/me", json={"year": "junior"}, headers=auth(TOKEN_A))
+    await client.put(
+        "/api/students/me/courses",
+        json={"courses": [{"code": "PH 310", "name": "Epidemiology", "semesterIndex": 3}]},
+        headers=auth(TOKEN_A),
+    )
+    feed = (await client.get("/api/students/me/activity?limit=1", headers=auth(TOKEN_A))).json()
+    assert len(feed) == 1
+    assert feed[0]["kind"] == "updated_courses"
 
 
 # --------------------------------------------------------------------------

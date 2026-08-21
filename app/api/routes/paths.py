@@ -26,7 +26,7 @@ from app.auth import current_student
 from app.db import get_session
 from app.matching import StudentProfile, build_detail, score_corpus
 from app.matching.combine import combine_paths
-from app.models import Student
+from app.models import ActivityKind, Student
 from app.schemas import (
     CombineRequest,
     CombineResponse,
@@ -92,6 +92,12 @@ async def create_path(
 
     path = await repository.save_path(session, student.id, request.alumnus_id, request.notes)
     profile = StudentProfile.from_model(student)
+    await repository.record_activity(
+        session,
+        student.id,
+        ActivityKind.saved_path,
+        f"Saved a path from the Class of {alumnus.graduation_year}",
+    )
     return SavedPathOut(
         id=path.id,
         saved_at=path.saved_at.isoformat(),
@@ -109,6 +115,9 @@ async def delete_path(
     removed = await repository.delete_saved_path(session, student.id, path_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Saved path {path_id} not found")
+    await repository.record_activity(
+        session, student.id, ActivityKind.removed_path, "Removed a saved path"
+    )
 
 
 @router.post("/combine", response_model=CombineResponse, response_model_by_alias=True)
@@ -142,6 +151,12 @@ async def combine(
     )
 
     response = combine_paths(profile, alumni)
+    await repository.record_activity(
+        session,
+        student.id,
+        ActivityKind.combined_paths,
+        f"Combined {len(alumni)} saved paths into a plan",
+    )
 
     try:
         await cache.set_raw(key, cache.serialize_cached(response.model_dump(by_alias=True)))

@@ -7,23 +7,30 @@ plain objects in tests without a live Postgres.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 
+import structlog
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.models import (
+    ActivityKind,
     Alumnus,
     PrecomputeRun,
     ProgramRole,
     SavedPath,
     School,
     Student,
+    StudentActivity,
     StudentCourse,
     StudentProgram,
     StudentYear,
 )
+
+log = structlog.get_logger(__name__)
 
 
 async def get_student(session: AsyncSession, student_id: str) -> Student | None:
@@ -335,6 +342,58 @@ async def delete_saved_path(session: AsyncSession, student_id: str, path_id: int
     await session.delete(path)
     await session.commit()
     return True
+
+
+async def record_activity(
+    session: AsyncSession, student_id: str, kind: ActivityKind, label: str
+) -> None:
+    """Append to a student's feed, unless it would repeat the last entry.
+
+    Without the guard, toggling a filter three times leaves three identical
+    lines in a four-item feed. The dedupe window is short and only looks at the
+    newest entry: the point is to collapse a burst, not to hide that someone
+    came back to the same cluster tomorrow.
+
+    Never raises. The feed is a nicety attached to actions that have already
+    happened — failing a save because its breadcrumb didn't write would be the
+    wrong trade.
+    """
+    try:
+        cutoff = datetime.now(UTC) - timedelta(seconds=settings.activity_dedupe_seconds)
+        latest = (
+            await session.execute(
+                select(StudentActivity)
+                .where(StudentActivity.student_id == student_id)
+                .order_by(StudentActivity.created_at.desc(), StudentActivity.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            latest is not None
+            and latest.kind == kind
+            and latest.label == label
+            and latest.created_at >= cutoff
+        ):
+            return
+
+        session.add(StudentActivity(student_id=student_id, kind=kind, label=label))
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        log.warning("activity_write_failed", student_id=student_id, kind=str(kind))
+
+
+async def list_activity(
+    session: AsyncSession, student_id: str, limit: int
+) -> list[StudentActivity]:
+    """The student's newest entries. Answered from ix_student_activity_recent."""
+    stmt = (
+        select(StudentActivity)
+        .where(StudentActivity.student_id == student_id)
+        .order_by(StudentActivity.created_at.desc(), StudentActivity.id.desc())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def record_run(

@@ -304,6 +304,7 @@ touch it:
 | `GET` | `/api/students/schools` | — | Schools available at registration |
 | `POST` | `/api/students/register` | — | Create a student, receive a token |
 | `GET` | `/api/students/me` | student | The caller's profile |
+| `GET` | `/api/students/me/activity` | student | Recent activity feed |
 | `PUT` | `/api/students/me` | student | Partial profile update |
 | `PUT` | `/api/students/me/courses` | student | Replace the transcript |
 | `GET` | `/api/constellation` | student | Full constellation payload |
@@ -412,7 +413,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               291 tests; only the security suite needs Postgres
+tests/               302 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

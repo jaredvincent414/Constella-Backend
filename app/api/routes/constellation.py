@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 
 from app import cache, repository
 from app.api.responses import cached_json
@@ -13,6 +13,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.jobs.recompute import ExploreQuery
 from app.matching import StudentProfile, build_constellation_for_query, parse_interests
+from app.models import ActivityKind
 from app.schemas import ConstellationResponse
 
 router = APIRouter(prefix="/api", tags=["constellation"])
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api", tags=["constellation"])
 @router.get("/constellation", response_model=ConstellationResponse, response_model_by_alias=True)
 async def get_constellation(
     request: Request,
+    background: BackgroundTasks,
     to_major: str | None = Query(default=None, alias="toMajor"),
     from_major: str | None = Query(default=None, alias="fromMajor"),
     interests: str | None = Query(
@@ -62,6 +64,13 @@ async def get_constellation(
     # written over the unfiltered entry, then served to the next request that
     # asked for everything.
     key = cache.constellation_key(student_id, query.cache_hash())
+
+    # A deliberate exploration is worth remembering; a page load is not. Queued
+    # as a background task so it runs *after* the response is written — a cache
+    # hit still returns without waiting on Postgres, and a failed write costs a
+    # log line rather than the request.
+    if not query.is_broad:
+        background.add_task(_log_exploration, student_id, query)
 
     if not refresh:
         try:
@@ -140,3 +149,31 @@ async def _compute_and_cache(
     # The freshly computed response, not the stored copy: this one was not
     # served from cache, and `meta.cached` should say so.
     return response
+
+
+def exploration_label(query: ExploreQuery) -> str:
+    """What the student was looking for, in the words they chose.
+
+    Most specific facet wins rather than concatenating all of them: "Explored
+    Health Policy · Biology · Economics → Public Health" is a query string, not
+    a memory. One clause is what makes a feed skimmable.
+    """
+    if query.to_major:
+        return f"Explored a move to {query.to_major}"[:200]
+    if query.career_area:
+        return f"Explored the {query.career_area} cluster"[:200]
+    if query.major:
+        return f"Explored {query.major} paths"[:200]
+    if query.interests:
+        return f"Explored interests: {', '.join(query.interests)}"[:200]
+    return "Explored the constellation"
+
+
+async def _log_exploration(student_id: str, query: ExploreQuery) -> None:
+    """Runs after the response. Opens its own session because this route
+    deliberately has no session dependency — one would be resolved eagerly and
+    check out a connection on every cache hit."""
+    async with SessionLocal() as session:
+        await repository.record_activity(
+            session, student_id, ActivityKind.explored, exploration_label(query)
+        )

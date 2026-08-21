@@ -20,17 +20,19 @@ from __future__ import annotations
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import repository
 from app.auth import current_student, new_token
+from app.config import settings
 from app.db import get_session
 from app.jobs import recompute
 from app.matching.programs import student_majors, student_minors
 from app.matching.timeline import course_display_name
-from app.models import School, Student, semester_label
+from app.models import ActivityKind, School, Student, semester_label
 from app.schemas import (
+    ActivityOut,
     CoursesUpdate,
     ProfileUpdate,
     RegisterRequest,
@@ -158,10 +160,34 @@ async def update_me(
     """
     updates = request.model_dump(exclude_unset=True)
     updated = await repository.update_student_profile(session, student, updates)
+    await repository.record_activity(
+        session, student.id, ActivityKind.updated_profile, "Updated your profile"
+    )
     # Every one of these fields feeds the score, so the cached constellation is
     # now wrong. Drop it rather than serve a result computed for the old profile.
     await _invalidate(student.id)
     return await _out_for(session, updated)
+
+
+@router.get("/me/activity", response_model=list[ActivityOut], response_model_by_alias=True)
+async def get_my_activity(
+    limit: int = Query(default=4, ge=1, le=50),
+    student: Student = Depends(current_student),
+    session: AsyncSession = Depends(get_session),
+) -> list[ActivityOut]:
+    """The caller's recent actions, newest first.
+
+    Under `/me` like everything else here — there is no route that takes a
+    student id, which is what makes reading someone else's feed unexpressible
+    rather than merely denied.
+    """
+    rows = await repository.list_activity(
+        session, student.id, min(limit, settings.activity_feed_limit)
+    )
+    return [
+        ActivityOut(id=r.id, kind=r.kind.value, label=r.label, at=r.created_at.isoformat())
+        for r in rows
+    ]
 
 
 @router.put("/me/courses", response_model=StudentOut, response_model_by_alias=True)
@@ -175,6 +201,12 @@ async def update_my_courses(
         session,
         student,
         [(c.code, c.name, c.semester_index) for c in request.courses],
+    )
+    await repository.record_activity(
+        session,
+        student.id,
+        ActivityKind.updated_courses,
+        f"Updated your transcript ({len(request.courses)} courses)",
     )
     await _invalidate(student.id)
     return await _out_for(session, updated)

@@ -133,3 +133,17 @@ class CoursesUpdate(CamelModel):
     courses: list[StudentCourseIn] = Field(
         description="The full transcript — this replaces what's stored, it does not merge"
     )
+
+
+class ActivityOut(CamelModel):
+    """One line in the Dashboard's recent-activity feed.
+
+    `label` is served as stored, not reassembled. The feed records what the
+    student did at the time — if a cluster is renamed or a saved path deleted,
+    the entry should still read the way it read then.
+    """
+
+    id: int
+    kind: str = Field(description="'explored' | 'saved_path' | 'simulated' | …")
+    label: str
+    at: str = Field(description="ISO-8601 timestamp")

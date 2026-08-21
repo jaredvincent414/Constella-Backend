@@ -32,6 +32,7 @@ from app.schemas.paths import (
     SourcePath,
 )
 from app.schemas.students import (
+    ActivityOut,
     CoursesUpdate,
     ProfileUpdate,
     RegisterRequest,
@@ -44,6 +45,7 @@ from app.schemas.students import (
 )
 
 __all__ = [
+    "ActivityOut",
     "AlumnusDetail",
     "AlumnusOut",
     "CamelModel",

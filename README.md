@@ -340,6 +340,27 @@ touch it:
   issuing a new hash out of band.
 * Registration has no rate limiting, so it's an unmetered write.
 
+## Deploying
+
+`Dockerfile` builds the API process only — Postgres and Redis come from managed
+instances, and `docker-compose.yml` is local development. `render.yaml` is a
+working blueprint for Render (API + Postgres + Redis + the nightly recompute).
+
+Migrations run as a **release step**, not on container start: a start-command
+migration races itself as soon as there is more than one instance, and it makes
+rolling back by redeploying an older image impossible.
+
+```bash
+alembic upgrade head                                  # release step
+python -m app.ingest --source midfield --alumni 1500  # once; the DB starts empty
+python -m app.jobs.recompute                          # warm the cache, then daily
+```
+
+`CORS_ORIGINS` must be the frontend's exact origin, scheme included. Managed
+providers hand out `postgres://` URLs, which select a synchronous driver this
+app doesn't install — `Settings._require_async_driver` rewrites the scheme, so
+the provider's URL can be wired straight through.
+
 ## API
 
 | Method | Path | Auth | Purpose |
@@ -469,7 +490,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               385 tests; only the security suite needs Postgres
+tests/               390 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

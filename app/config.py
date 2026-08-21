@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,26 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://constella:constella@localhost:5433/constella"
     redis_url: str = "redis://localhost:6380/0"
+
+    @field_validator("database_url")
+    @classmethod
+    def _require_async_driver(cls, value: str) -> str:
+        """Accept the URL managed Postgres providers actually hand out.
+
+        Render, Heroku and most others emit `postgres://` (and some
+        `postgresql://`), both of which select SQLAlchemy's *synchronous* psycopg
+        driver — which this application does not install. The failure is a
+        `ModuleNotFoundError` at engine construction, i.e. a container that
+        crashes on boot with a message pointing at the wrong problem.
+
+        Rewriting the scheme here is safe because there is exactly one driver
+        this app can use. A URL that already names a different async driver is
+        left alone.
+        """
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix):]
+        return value
 
     # Must outlive the interval between precompute runs. A TTL shorter than the
     # job period is the worst of both worlds: entries expire long before the job

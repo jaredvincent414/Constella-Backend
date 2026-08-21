@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from app import cache
 from app.auth import _bearer, hash_token, new_token, require_admin
 from app.config import settings
+from app.schemas import split_name
 
 
 def test_hash_token_is_deterministic_sha256():
@@ -188,3 +189,28 @@ class TestPrincipalCacheRefusesATenantlessCaller:
 
         monkeypatch.setattr(cache, "get_client", lambda: FakeClient())
         assert await cache.get_principal("hash") == ("stu-1", "school-a")
+
+
+class TestSplitName:
+    """`students.name` is one column because that is all registration ever
+    collected. The frontend's signup form collects two, so until the columns
+    exist the split happens in the view — lossy, and deliberately visible."""
+
+    def test_splits_a_two_part_name(self):
+        assert split_name("Ada Lovelace") == ("Ada", "Lovelace")
+
+    def test_a_single_word_has_no_last_name(self):
+        assert split_name("Ada") == ("Ada", None)
+
+    def test_extra_words_go_to_the_last_name(self):
+        # Lossy and known: "Mary Jane" is a given name to some people and not
+        # to others, and one column cannot tell the difference.
+        assert split_name("Mary Jane Watson") == ("Mary", "Jane Watson")
+
+    def test_blank_and_missing_names(self):
+        assert split_name(None) == (None, None)
+        assert split_name("") == (None, None)
+        assert split_name("   ") == (None, None)
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        assert split_name("  Ada  Lovelace  ") == ("Ada", "Lovelace")

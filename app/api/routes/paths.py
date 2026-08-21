@@ -17,7 +17,7 @@ invalidates it alongside the constellation.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache, repository
@@ -27,7 +27,6 @@ from app.matching import StudentProfile, build_detail, score_corpus
 from app.matching.combine import combine_paths
 from app.models import Student
 from app.schemas import (
-    AlumnusDetail,
     CombineRequest,
     CombineResponse,
     SavedPathOut,
@@ -37,32 +36,44 @@ from app.schemas import (
 router = APIRouter(prefix="/api/paths", tags=["paths"])
 
 
-async def _detail_for(
-    session: AsyncSession, alumnus_id: str, profile, school_id: str | None
-) -> AlumnusDetail:
-    alumnus = await repository.get_alumnus(session, alumnus_id, school_id=school_id)
-    if alumnus is None:
-        raise HTTPException(status_code=404, detail=f"Alumnus {alumnus_id!r} not found")
-    scored = score_corpus(profile, [alumnus])[0] if profile else None
-    return build_detail(scored, alumnus, profile)
-
-
 @router.get("", response_model=list[SavedPathOut], response_model_by_alias=True)
 async def list_paths(
     student: Student = Depends(current_student),
     session: AsyncSession = Depends(get_session),
 ) -> list[SavedPathOut]:
+    """The caller's saved paths, each with the full detail payload.
+
+    Both the fetch and the scoring are done once for the whole set rather than
+    per path. Scores are unaffected by the batching — every component is
+    computed per alumnus against the student, so an alumnus scores the same
+    alone as in company — but a per-path round trip made an ordinary list of
+    bookmarks cost a query (plus five eager loads) apiece.
+    """
     profile = StudentProfile.from_model(student)
     saved = await repository.list_saved_paths(session, student.id)
-    return [
-        SavedPathOut(
-            id=path.id,
-            saved_at=path.saved_at.isoformat(),
-            notes=path.notes,
-            alumnus=await _detail_for(session, path.alumnus_id, profile, student.school_id),
+
+    alumni = await repository.list_alumni_by_ids(
+        session, [path.alumnus_id for path in saved], school_id=student.school_id
+    )
+    by_id = {alumnus.id: alumnus for alumnus in alumni}
+    scored_by_id = {item.alumnus.id: item for item in score_corpus(profile, alumni)}
+
+    out: list[SavedPathOut] = []
+    for path in saved:
+        alumnus = by_id.get(path.alumnus_id)
+        if alumnus is None:
+            raise HTTPException(
+                status_code=404, detail=f"Alumnus {path.alumnus_id!r} not found"
+            )
+        out.append(
+            SavedPathOut(
+                id=path.id,
+                saved_at=path.saved_at.isoformat(),
+                notes=path.notes,
+                alumnus=build_detail(scored_by_id.get(alumnus.id), alumnus, profile),
+            )
         )
-        for path in saved
-    ]
+    return out
 
 
 @router.post("", response_model=SavedPathOut, response_model_by_alias=True, status_code=201)
@@ -72,8 +83,10 @@ async def create_path(
     session: AsyncSession = Depends(get_session),
 ) -> SavedPathOut:
     # School-scoped before the write: bookmarking is otherwise a way to smuggle a
-    # foreign alumnus id into a row this student is allowed to read back.
-    if await repository.get_alumnus(session, request.alumnus_id, student.school_id) is None:
+    # foreign alumnus id into a row this student is allowed to read back. The
+    # record is kept rather than re-fetched for the response body.
+    alumnus = await repository.get_alumnus(session, request.alumnus_id, student.school_id)
+    if alumnus is None:
         raise HTTPException(status_code=404, detail=f"Alumnus {request.alumnus_id!r} not found")
 
     path = await repository.save_path(session, student.id, request.alumnus_id, request.notes)
@@ -82,7 +95,7 @@ async def create_path(
         id=path.id,
         saved_at=path.saved_at.isoformat(),
         notes=path.notes,
-        alumnus=await _detail_for(session, path.alumnus_id, profile, student.school_id),
+        alumnus=build_detail(score_corpus(profile, [alumnus])[0], alumnus, profile),
     )
 
 
@@ -102,7 +115,7 @@ async def combine(
     request: CombineRequest,
     student: Student = Depends(current_student),
     session: AsyncSession = Depends(get_session),
-) -> CombineResponse:
+) -> CombineResponse | Response:
     saved = await repository.get_saved_paths_by_ids(session, student.id, request.path_ids)
     if len(saved) < 2:
         raise HTTPException(
@@ -113,24 +126,24 @@ async def combine(
     alumnus_ids = [p.alumnus_id for p in saved]
     key = cache.combined_path_key(student.id, alumnus_ids)
     try:
-        cached_payload = await cache.get_json(key)
+        cached_raw = await cache.get_raw(key)
     except Exception:
-        cached_payload = None
-    if cached_payload is not None:
-        return CombineResponse.model_validate(cached_payload)
+        cached_raw = None
+    if cached_raw is not None:
+        return Response(content=cached_raw, media_type="application/json")
 
     profile = StudentProfile.from_model(student)
-    alumni = []
-    for alumnus_id in alumnus_ids:
-        alumnus = await repository.get_alumnus(session, alumnus_id, school_id=student.school_id)
-        if alumnus is not None:
-            alumni.append(alumnus)
+    # One query for the set. Ids outside the student's school simply don't come
+    # back, which is the same silent drop the per-id loop did.
+    alumni = await repository.list_alumni_by_ids(
+        session, alumnus_ids, school_id=student.school_id
+    )
 
     response = combine_paths(profile, alumni)
 
     try:
-        await cache.set_json(key, response.model_dump(by_alias=True))
-        await cache.track_student_key(student.id, key)
+        await cache.set_raw(key, cache.serialize_cached(response.model_dump(by_alias=True)))
+        await cache.track_student_key(student.id, key, {"kind": cache.KIND_COMBINE})
     except Exception:
         pass  # caching is an optimization; never fail the request over it
 

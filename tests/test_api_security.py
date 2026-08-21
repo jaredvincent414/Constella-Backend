@@ -250,6 +250,51 @@ async def test_timeline_404s_across_schools(client, seeded):
     assert missing.status_code == 404
 
 
+async def test_timeline_cache_is_not_shared_between_students(client, seeded):
+    """Two students at the same school must not see each other's comparison.
+
+    The detail payload is scored against the *caller's* transcript —
+    `sharedCourses` is rendered with their own course names. The timeline cache
+    key therefore carries the student id; keyed on the alumnus alone, the second
+    reader here would be served Ada's shared-course list as if it were theirs.
+    """
+    registered = await client.post(
+        "/api/students/register",
+        json={
+            "schoolId": SCHOOL_A,
+            "email": "no-courses@test-sec.example.edu",
+            "name": "No Courses",
+            "year": "sophomore",
+        },
+    )
+    assert registered.status_code == 201
+    other = registered.json()["token"]
+
+    # Ada first, so the entry is warm before the second student asks.
+    ada = await client.get(f"/api/alumni/{ALUM_A}/timeline", headers=auth(TOKEN_A))
+    assert ada.status_code == 200
+    assert ada.json()["scoreBreakdown"]["sharedCourses"] == ["Bio 101"]
+
+    second = await client.get(f"/api/alumni/{ALUM_A}/timeline", headers=auth(other))
+    assert second.status_code == 200
+    assert second.json()["scoreBreakdown"]["sharedCourses"] == []
+
+
+async def test_saved_paths_are_scored_against_the_caller(client, seeded):
+    """The batched list must produce what the per-alumnus detail route does.
+
+    `GET /api/paths` scores every saved path in one pass rather than one call
+    apiece; this pins the two together so the list and the panel can't drift.
+    """
+    created = await client.post("/api/paths", json={"alumnusId": ALUM_A}, headers=auth(TOKEN_A))
+    assert created.status_code == 201
+
+    listed = await client.get("/api/paths", headers=auth(TOKEN_A))
+    assert listed.status_code == 200
+    detail = await client.get(f"/api/alumni/{ALUM_A}/timeline", headers=auth(TOKEN_A))
+    assert listed.json()[0]["alumnus"] == detail.json()
+
+
 async def test_constellation_only_contains_your_school(client, seeded):
     response = await client.get("/api/constellation?refresh=true", headers=auth(TOKEN_A))
     assert response.status_code == 200

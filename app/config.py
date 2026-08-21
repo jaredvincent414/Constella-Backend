@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # stretching the whole job.
     precompute_max_queries_per_student: int = 8
 
+    # How close a free-text facet has to be to count as a match. Same scale and
+    # the same kernel as the scorer's pivot-query threshold, so "close enough"
+    # means one thing in this codebase rather than two.
+    facet_match_threshold: float = 0.3
+
     constellation_min_alumni: int = 50
     constellation_max_alumni: int = 200
     simulator_top_n: int = 5

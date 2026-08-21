@@ -35,7 +35,10 @@ from app.schemas import (
 )
 
 STATUS_KEPT = "kept"
-STATUS_ADDED = "added"
+# "new" rather than "added": this is the value the frontend switches on to
+# render the highlighted course pill, and one vocabulary across the two
+# stacks beats a translation layer in the client.
+STATUS_ADDED = "new"
 STATUS_DROPPED = "dropped"
 
 

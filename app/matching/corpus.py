@@ -61,6 +61,14 @@ class AlumnusView:
     # (it feeds a `max`), but it is fixed here so it can't vary between calls.
     destinations: tuple[str, ...] = field(default=())
 
+    # Where they *ended up*, without the majors: the academic career area and
+    # the employment industry. Kept separate from `destinations` because the
+    # Explore career-area facet must not match on a major name — an Aerospace
+    # Engineering graduate working in Manufacturing is not in Aerospace &
+    # Defense, and scoring an intended direction is a different question from
+    # filtering on an outcome.
+    outcome_labels: tuple[str, ...] = field(default=())
+
     # Pivot-year alignment. None when they never pivoted.
     pivot_year_index: int | None = None
 
@@ -128,6 +136,7 @@ def build_view(alumnus: Alumnus) -> AlumnusView:
         final_majors=final,
         minors=all_minors(alumnus),
         destinations=(*final, alumnus.career_area, outcome_industry(alumnus)),
+        outcome_labels=(alumnus.career_area, outcome_industry(alumnus)),
         pivot_year_index=pivot.year_index if pivot is not None else None,
         pivot_destinations=(
             *alumnus.final_majors,

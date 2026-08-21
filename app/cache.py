@@ -58,7 +58,10 @@ _client: aioredis.Redis | None = None
 # v7: entries are gzipped bytes rather than JSON text. A v6 entry read as v7
 #     would fail the magic-number check and be discarded as corrupt, which is
 #     survivable — but the version is what makes it a clean miss instead.
-CACHE_VERSION = "v7"
+# v8: the constellation payload nests alumni inside their cluster, scores them
+#     0..100, and carries totalAlumni/summary. A v7 entry deserialized as v8
+#     would be missing `clusters[].alumni` entirely.
+CACHE_VERSION = "v8"
 
 # Level 6 is the knee: level 1 gets 13.8x, 6 gets 19.2x, and 9 gets 20.2x for
 # more CPU than the extra 5% is worth. All three cost well under a millisecond

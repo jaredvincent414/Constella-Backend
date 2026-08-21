@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 243 tests
+pytest                                    # 266 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -244,6 +244,26 @@ disagrees with the ranking is worse than none.
 minors) data must surface its provenance anywhere it reaches the UI. MIDFIELD
 has no employment data at all; the career outcomes are a stand-in. Never present
 either as reported fact.
+
+**Explore facets filter, they never score.** `interests`, `careerArea`, and
+`major` narrow the corpus in [app/matching/facets.py](app/matching/facets.py);
+the weighted formula then ranks whoever survives. Keep it that way — folding a
+facet into the score would let a strong course overlap outvote an explicit "show
+me Health Policy", and it would turn every new facet into a scoring change
+needing an eval run.
+
+The career-area facet matches `outcome_labels` (academic area + industry), *not*
+`destinations`, which includes final majors. That distinction is load-bearing:
+matching majors made `careerArea=Aerospace & Defense` return 65 alumni of whom
+only 50 worked in it, because Aerospace Engineering graduates share a token with
+the industry name. `TestCareerArea` pins it.
+
+**Every facet is in the cache key.** `ExploreQuery` ([app/jobs/recompute.py](app/jobs/recompute.py))
+owns the hash, the index params, and the rebuild — one object because those three
+have to stay in step. Interests are sorted, so chip order can't fork the cache
+into two entries holding the same payload. Adding a query parameter that changes
+the payload without adding it here writes a filtered result over the unfiltered
+entry.
 
 ## Changing the scoring formula
 

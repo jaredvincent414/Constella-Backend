@@ -11,8 +11,8 @@ from app.api.responses import cached_json
 from app.auth import Principal, current_principal
 from app.config import settings
 from app.db import SessionLocal
-from app.jobs.recompute import query_hash
-from app.matching import StudentProfile, build_constellation_for_query
+from app.jobs.recompute import ExploreQuery
+from app.matching import StudentProfile, build_constellation_for_query, parse_interests
 from app.schemas import ConstellationResponse
 
 router = APIRouter(prefix="/api", tags=["constellation"])
@@ -23,6 +23,14 @@ async def get_constellation(
     request: Request,
     to_major: str | None = Query(default=None, alias="toMajor"),
     from_major: str | None = Query(default=None, alias="fromMajor"),
+    interests: str | None = Query(
+        default=None, description="Comma-separated, e.g. Biology,Psychology. Matches on any."
+    ),
+    career_area: str | None = Query(default=None, alias="careerArea"),
+    major: str | None = Query(
+        default=None,
+        description="Matches either end of the path — started in it, or graduated in it",
+    ),
     max_alumni: int | None = Query(default=None, alias="maxAlumni", ge=1, le=1000),
     refresh: bool = Query(default=False, description="Bypass the cache and recompute"),
     principal: Principal = Depends(current_principal),
@@ -42,8 +50,18 @@ async def get_constellation(
     check out a connection for every hit.
     """
     student_id = principal.id
-    limit = max_alumni or settings.constellation_max_alumni
-    key = cache.constellation_key(student_id, query_hash(from_major, to_major, limit))
+    query = ExploreQuery.build(
+        max_alumni=max_alumni or settings.constellation_max_alumni,
+        from_major=from_major,
+        to_major=to_major,
+        interests=parse_interests(interests),
+        career_area=career_area,
+        major=major,
+    )
+    # Every facet is in the key. One left out would mean a filtered result
+    # written over the unfiltered entry, then served to the next request that
+    # asked for everything.
+    key = cache.constellation_key(student_id, query.cache_hash())
 
     if not refresh:
         try:
@@ -70,7 +88,7 @@ async def get_constellation(
                 return cached_json(waited, request)
 
     try:
-        return await _compute_and_cache(principal, key, from_major, to_major, limit)
+        return await _compute_and_cache(principal, key, query)
     finally:
         if not refresh:
             try:
@@ -80,11 +98,7 @@ async def get_constellation(
 
 
 async def _compute_and_cache(
-    principal: Principal,
-    key: str,
-    from_major: str | None,
-    to_major: str | None,
-    limit: int,
+    principal: Principal, key: str, query: ExploreQuery
 ) -> ConstellationResponse:
     async with SessionLocal() as session:
         student = await repository.get_student(session, principal.id)
@@ -105,22 +119,21 @@ async def _compute_and_cache(
     # worker is serving. The thread never touches the session, and the corpus is
     # fully eager-loaded, so no lazy load can fire from off-loop.
     response = await asyncio.to_thread(
-        build_constellation_for_query, profile, alumni, from_major, to_major, limit
+        build_constellation_for_query,
+        profile,
+        alumni,
+        query.from_major,
+        query.to_major,
+        query.max_alumni,
+        list(query.interests),
+        query.career_area,
+        query.major,
     )
 
     try:
         payload = response.model_dump(by_alias=True)
         await cache.set_raw(key, cache.serialize_cached(payload))
-        await cache.track_student_key(
-            principal.id,
-            key,
-            {
-                "kind": cache.KIND_CONSTELLATION,
-                "fromMajor": from_major,
-                "toMajor": to_major,
-                "maxAlumni": limit,
-            },
-        )
+        await cache.track_student_key(principal.id, key, query.as_params())
     except Exception:
         pass  # Caching is an optimization; never fail the request over it.
 

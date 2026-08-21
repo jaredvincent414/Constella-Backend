@@ -318,8 +318,24 @@ touch it:
 | `POST` | `/api/admin/recompute/{studentId}` | admin | Rebuild or invalidate one student |
 | `DELETE` | `/api/admin/cache` | admin | Flush cached constellations |
 
-`GET /api/constellation` also accepts `fromMajor`, `toMajor`, `maxAlumni`, and
-`refresh=true` (bypass cache).
+`GET /api/constellation` also accepts:
+
+| Param | Meaning |
+|---|---|
+| `interests` | Comma-separated. Matches on **any** of them |
+| `careerArea` | Where they ended up — industry or academic area, never a major |
+| `major` | Either end of the path: started in it, or graduated in it |
+| `fromMajor` / `toMajor` | Pivot query, for the What If view |
+| `maxAlumni` | Cap on returned alumni (default 200) |
+| `refresh=true` | Bypass the cache and recompute |
+
+Facets **filter, they don't score**: they decide who is eligible, and the
+weighted formula ranks whoever survives. Every one of them is part of the cache
+key — a facet left out would write a filtered result over the unfiltered entry.
+
+Alumni are nested inside the cluster they belong to, since the grouping is the
+layout, and `similarityScore` is 0–100 (the frontend renders it as a match
+percentage).
 
 **The response contains no geometry.** Radius, angle, and coordinates are the
 frontend's concern; shipping them would freeze its ability to change the layout
@@ -372,6 +388,7 @@ app/
     explain.py       matchReason, derived from the score components
     outcomes.py      Career-outcome accessor (the clustering axis)
     corpus.py        Per-school prepared corpus (student-independent derivations)
+  facets.py        Explore filters — interests, career area, major
     scoring.py       The weighted formula (NumPy-vectorized overlap)
     clustering.py    Career-outcome grouping and edge pruning
     timeline.py      Semester timeline for the detail panel
@@ -394,7 +411,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               243 tests; only the security suite needs Postgres
+tests/               266 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

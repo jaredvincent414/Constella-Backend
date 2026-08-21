@@ -10,7 +10,6 @@ from app.api.responses import cached_json
 from app.auth import current_student
 from app.db import get_session
 from app.matching import StudentProfile, build_detail, score_corpus
-from app.models import Student
 from app.schemas import AlumnusDetail
 
 router = APIRouter(prefix="/api/alumni", tags=["alumni"])

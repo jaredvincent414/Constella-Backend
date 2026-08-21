@@ -169,6 +169,8 @@ async def get_raw(key: str) -> bytes | None:
         return None
     return blob
 
+async def set_principal(token_hash: str, student_id: str, school_id: str, ttl: int) -> None:
+    """Remember a resolved token for `ttl` seconds.
 
 async def set_raw(key: str, blob: bytes, ttl: int | None = None) -> None:
     await get_client().set(key, blob, ex=ttl if ttl is not None else settings.cache_ttl_seconds)

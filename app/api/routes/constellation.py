@@ -11,7 +11,7 @@ from app import cache, repository
 from app.api.responses import cached_json
 from app.auth import current_student
 from app.config import settings
-from app.db import get_session
+from app.db import SessionLocal
 from app.jobs.recompute import query_hash
 from app.matching import StudentProfile, build_constellation_for_query
 from app.models import Student
@@ -38,8 +38,13 @@ async def get_constellation(
 
     There is no `studentId` parameter — the subject is the token holder, so the
     cache key is derived from an identity the caller cannot choose.
+
+    No session dependency: on a hit this route needs Postgres for nothing but
+    identity, and identity comes from `current_principal`, which is cached. The
+    miss path opens its own session. A dependency would be resolved eagerly and
+    check out a connection for every hit.
     """
-    student_id = student.id
+    student_id = principal.id
     limit = max_alumni or settings.constellation_max_alumni
     key = cache.constellation_key(student_id, query_hash(from_major, to_major, limit))
 

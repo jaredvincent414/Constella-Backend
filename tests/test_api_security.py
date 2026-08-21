@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app import cache
 from app.auth import hash_token
 from app.config import settings
 from app.db import SessionLocal
@@ -103,6 +104,15 @@ async def _cleanup() -> None:
         await session.execute(delete(Student).where(Student.school_id.in_([SCHOOL_A, SCHOOL_B])))
         await session.execute(delete(School).where(School.id.in_([SCHOOL_A, SCHOOL_B])))
         await session.commit()
+
+    # Resolved tokens are cached for `auth_cache_ttl_seconds`. These fixtures
+    # recreate the same tokens against freshly inserted rows, so a principal
+    # left over from the previous test would outlive the student it names.
+    for token in (TOKEN_A, TOKEN_B, "test-sec-orphan-token"):
+        try:
+            await cache.forget_principal(hash_token(token))
+        except Exception:
+            pass
 
 
 @pytest.fixture
@@ -232,10 +242,42 @@ async def test_school_less_student_is_refused(client, seeded):
             "/api/constellation", headers=auth("test-sec-orphan-token")
         )
         assert response.status_code == 403
+
+        # And again, because the token cache must not learn a tenantless
+        # principal. Caching one would turn a fail-closed check into a
+        # fail-open one for the length of the TTL.
+        again = await client.get(
+            "/api/constellation", headers=auth("test-sec-orphan-token")
+        )
+        assert again.status_code == 403
+        assert await cache.get_principal(hash_token("test-sec-orphan-token")) is None
     finally:
         async with SessionLocal() as session:
             await session.execute(delete(Student).where(Student.id == "test-sec-orphan"))
             await session.commit()
+
+
+async def test_cached_token_still_scopes_to_its_own_school(client, seeded):
+    """The auth cache stores (student, school). If it ever dropped the school —
+    or served one token's entry for another — the corpus boundary would move
+    with it, so exercise both tokens repeatedly through the cached path."""
+    for _ in range(3):
+        a = await client.get("/api/constellation", headers=auth(TOKEN_A))
+        b = await client.get("/api/constellation", headers=auth(TOKEN_B))
+        assert a.status_code == 200 and b.status_code == 200
+        assert ALUM_B not in {x["id"] for x in a.json()["alumni"]}
+        assert ALUM_A not in {x["id"] for x in b.json()["alumni"]}
+
+    assert await cache.get_principal(hash_token(TOKEN_A)) == (STUDENT_A, SCHOOL_A)
+    assert await cache.get_principal(hash_token(TOKEN_B)) == (STUDENT_B, SCHOOL_B)
+
+
+async def test_an_invalid_token_is_never_cached_as_valid(client, seeded):
+    for _ in range(3):
+        assert (
+            await client.get("/api/constellation", headers=auth("not-a-real-token"))
+        ).status_code == 401
+    assert await cache.get_principal(hash_token("not-a-real-token")) is None
 
 
 async def test_timeline_is_readable_within_your_school(client, seeded):

@@ -10,7 +10,13 @@ from app.config import settings
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_pre_ping=True,
+    # See `Settings.db_pool_pre_ping` for why pre-ping is off by default: it
+    # costs a round trip per connection checkout, and recycling covers the case
+    # it usually guards.
+    pool_pre_ping=settings.db_pool_pre_ping,
+    pool_recycle=settings.db_pool_recycle_seconds,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
 )
 
 SessionLocal = async_sessionmaker(

@@ -419,8 +419,11 @@ async def test_simulate_runs_as_the_caller(client, seeded):
         "/api/simulate", json={"toMajor": "Health Policy"}, headers=auth(TOKEN_A)
     )
     assert response.status_code == 200
-    for match in response.json()["matches"]:
-        assert match["alumnus"]["id"] != ALUM_B
+    # Cards carry the alumnus id so they can open the same detail panel a
+    # constellation node does — which also means the tenant boundary has to
+    # hold here exactly as it does there.
+    for card in response.json()["cards"]:
+        assert card["id"] != ALUM_B
 
 
 # --------------------------------------------------------------------------

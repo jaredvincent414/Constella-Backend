@@ -308,7 +308,7 @@ touch it:
 | `PUT` | `/api/students/me/courses` | student | Replace the transcript |
 | `GET` | `/api/constellation` | student | Full constellation payload |
 | `GET` | `/api/alumni/{id}/timeline` | student | Lazily-fetched detail panel |
-| `POST` | `/api/simulate` | student | What If Simulator — top 5 matches |
+| `POST` | `/api/simulate` | student | What If Simulator — aggregates + top 5 cards |
 | `GET` | `/api/paths` | student | Saved paths, with full timelines |
 | `POST` | `/api/paths` | student | Bookmark an alumnus path (idempotent) |
 | `DELETE` | `/api/paths/{id}` | student | Remove a saved path |
@@ -393,6 +393,7 @@ app/
     clustering.py    Career-outcome grouping and edge pruning
     timeline.py      Semester timeline for the detail panel
     combine.py       Path combining — merge saved paths + Sankey
+  transitions.py   What-If cards and the aggregates above them
     pipeline.py      score → rank → cut → cluster → prune
   jobs/
     recompute.py     Background precompute (one corpus per school)
@@ -411,7 +412,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               266 tests; only the security suite needs Postgres
+tests/               285 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 266 tests
+pytest                                    # 285 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -264,6 +264,18 @@ have to stay in step. Interests are sorted, so chip order can't fork the cache
 into two entries holding the same payload. Adding a query parameter that changes
 the payload without adding it here writes a filtered result over the unfiltered
 entry.
+
+**What-If aggregates describe the corpus, not the page.** `totalTransitions`,
+`peakTiming`, and `topOutcome` are computed over every candidate the pivot query
+matched, not the five cards returned. Deriving them from the cards would make
+"12 alumni made this transition" a fact about page size. `peakTiming` is None
+when nothing pivoted rather than naming a peak over an empty set.
+
+**A blank `course_name` falls back to the course code.** 58% of
+`alumnus_courses` rows have one — the MIDFIELD adapter carries titles for some
+catalogue entries and not others — so `course_display_name` is the only way a
+course should reach a payload. Reading `course_name` directly renders empty
+pills.
 
 ## Changing the scoring formula
 

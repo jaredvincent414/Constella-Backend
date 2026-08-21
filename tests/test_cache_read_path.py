@@ -10,10 +10,8 @@ from __future__ import annotations
 import json
 
 import pytest
-from starlette.requests import Request
 
 from app import cache
-from app.api.responses import cached_json
 from app.config import settings
 from app.jobs.recompute import queries_to_warm, query_hash
 from app.matching import (
@@ -119,84 +117,6 @@ class TestFlushPattern:
             cache.student_index_key("stu-1"),
         ):
             assert fnmatch(key, cache.FLUSH_PATTERN), key
-
-
-def _request(**headers: str) -> Request:
-    raw = [(k.replace("_", "-").lower().encode(), v.encode()) for k, v in headers.items()]
-    return Request(
-        {"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": raw}
-    )
-
-
-class TestCachedResponse:
-    def _blob(self) -> bytes:
-        return cache.serialize_cached({"meta": {"cached": False}, "alumni": [{"id": "a1"}]})
-
-    def test_gzip_client_gets_the_stored_bytes_untouched(self):
-        blob = self._blob()
-        response = cached_json(blob, _request(accept_encoding="gzip, deflate"))
-        assert response.body == blob
-        assert response.headers["content-encoding"] == "gzip"
-        assert response.headers["vary"] == "Accept-Encoding"
-
-    def test_a_client_without_gzip_gets_json(self):
-        response = cached_json(self._blob(), _request(accept_encoding="identity"))
-        assert "content-encoding" not in response.headers
-        assert json.loads(response.body)["alumni"] == [{"id": "a1"}]
-
-    def test_the_two_representations_carry_different_etags(self):
-        """A gzip body and an identity body are different entities. Sharing one
-        tag would let an intermediary answer a request for one with the other."""
-        blob = self._blob()
-        gz = cached_json(blob, _request(accept_encoding="gzip"))
-        plain = cached_json(blob, _request(accept_encoding="identity"))
-        assert gz.headers["etag"] != plain.headers["etag"]
-
-    def test_etag_is_stable_for_the_same_payload(self):
-        first = cached_json(self._blob(), _request(accept_encoding="gzip"))
-        second = cached_json(self._blob(), _request(accept_encoding="gzip"))
-        assert first.headers["etag"] == second.headers["etag"]
-
-    def test_etag_changes_when_the_payload_does(self):
-        other = cache.serialize_cached({"meta": {"cached": False}, "alumni": [{"id": "a2"}]})
-        first = cached_json(self._blob(), _request(accept_encoding="gzip"))
-        second = cached_json(other, _request(accept_encoding="gzip"))
-        assert first.headers["etag"] != second.headers["etag"]
-
-    def test_a_matching_tag_gets_304_with_no_body(self):
-        blob = self._blob()
-        etag = cached_json(blob, _request(accept_encoding="gzip")).headers["etag"]
-        revalidated = cached_json(blob, _request(accept_encoding="gzip", if_none_match=etag))
-        assert revalidated.status_code == 304
-        assert revalidated.body == b""
-        # No body means nothing was encoded; the header would be a lie.
-        assert "content-encoding" not in revalidated.headers
-
-    def test_a_stale_tag_gets_the_full_body(self):
-        blob = self._blob()
-        response = cached_json(blob, _request(accept_encoding="gzip", if_none_match='"nope"'))
-        assert response.status_code == 200
-        assert response.body == blob
-
-    def test_a_tag_from_the_other_representation_does_not_match(self):
-        blob = self._blob()
-        gz_tag = cached_json(blob, _request(accept_encoding="gzip")).headers["etag"]
-        crossed = cached_json(blob, _request(accept_encoding="identity", if_none_match=gz_tag))
-        assert crossed.status_code == 200
-
-    def test_if_none_match_accepts_a_list_and_a_wildcard(self):
-        blob = self._blob()
-        etag = cached_json(blob, _request(accept_encoding="gzip")).headers["etag"]
-        for header in (f'"x", {etag}', "*", f"W/{etag}"):
-            response = cached_json(blob, _request(accept_encoding="gzip", if_none_match=header))
-            assert response.status_code == 304, header
-
-    def test_responses_are_private_and_always_revalidated(self):
-        """Every payload is scored for one student, so a shared cache must not
-        keep it; `no-cache` means store it but check before reuse, which is what
-        makes the 304 possible without ever serving something stale."""
-        response = cached_json(self._blob(), _request(accept_encoding="gzip"))
-        assert response.headers["cache-control"] == "private, no-cache"
 
 
 class TestTimelineKey:

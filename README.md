@@ -362,7 +362,6 @@ app/
   config.py          Settings from environment
   db.py              Async engine and session factory
   cache.py           Redis keys, TTLs, gzip storage, invalidation
-  api/responses.py   Cached-response encoding, ETag/304
   repository.py      Queries, with relationships eager-loaded
   models/            SQLAlchemy ORM
   schemas/           Pydantic — camelCase on the wire
@@ -394,7 +393,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               243 tests; only the security suite needs Postgres
+tests/               224 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

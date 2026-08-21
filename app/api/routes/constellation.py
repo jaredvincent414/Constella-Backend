@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import cache, repository
 from app.api.responses import cached_json
-from app.auth import Principal, current_principal
+from app.auth import current_student
 from app.config import settings
 from app.db import SessionLocal
 from app.jobs.recompute import query_hash
 from app.matching import StudentProfile, build_constellation_for_query
+from app.models import Student
 from app.schemas import ConstellationResponse
 
 router = APIRouter(prefix="/api", tags=["constellation"])
@@ -25,7 +27,8 @@ async def get_constellation(
     from_major: str | None = Query(default=None, alias="fromMajor"),
     max_alumni: int | None = Query(default=None, alias="maxAlumni", ge=1, le=1000),
     refresh: bool = Query(default=False, description="Bypass the cache and recompute"),
-    principal: Principal = Depends(current_principal),
+    student: Student = Depends(current_student),
+    session: AsyncSession = Depends(get_session),
 ) -> ConstellationResponse | Response:
     """Serve the authenticated student's constellation, cached.
 
@@ -70,7 +73,9 @@ async def get_constellation(
                 return cached_json(waited, request)
 
     try:
-        return await _compute_and_cache(principal, key, from_major, to_major, limit)
+        return await _compute_and_cache(
+            session, student, key, from_major, to_major, limit
+        )
     finally:
         if not refresh:
             try:
@@ -80,25 +85,17 @@ async def get_constellation(
 
 
 async def _compute_and_cache(
-    principal: Principal,
+    session: AsyncSession,
+    student: Student,
     key: str,
     from_major: str | None,
     to_major: str | None,
     limit: int,
 ) -> ConstellationResponse:
-    async with SessionLocal() as session:
-        student = await repository.get_student(session, principal.id)
-        if student is None:
-            # A cached principal outlives its student by up to the auth TTL. On
-            # a hit that costs nothing — the payload is theirs either way — but
-            # there is nothing to recompute from, and a 401 is the honest answer
-            # rather than a 500 on a None profile.
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-        # Only this student's own school. The corpus is the tenant boundary: an
-        # alumnus from another school can never reach the response, scored or not.
-        alumni = await repository.list_alumni(session, school_id=principal.school_id)
-        profile = StudentProfile.from_model(student)
+    # Only this student's own school. The corpus is the tenant boundary: an
+    # alumnus from another school can never reach the response, scored or not.
+    alumni = await repository.list_alumni(session, school_id=student.school_id)
+    profile = StudentProfile.from_model(student)
 
     # Scoring is synchronous, CPU-bound, and proportional to the corpus size —
     # run inline it would block the event loop for every other request this
@@ -112,7 +109,7 @@ async def _compute_and_cache(
         payload = response.model_dump(by_alias=True)
         await cache.set_raw(key, cache.serialize_cached(payload))
         await cache.track_student_key(
-            principal.id,
+            student.id,
             key,
             {
                 "kind": cache.KIND_CONSTELLATION,

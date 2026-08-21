@@ -57,24 +57,66 @@ def _corpus() -> list:
 
 class TestSerializeCached:
     def test_stamps_meta_cached_true(self):
-        raw = cache.serialize_cached({"meta": {"cached": False, "returned": 3}})
-        assert json.loads(raw)["meta"]["cached"] is True
+        blob = cache.serialize_cached({"meta": {"cached": False, "returned": 3}})
+        assert json.loads(cache.decompress(blob))["meta"]["cached"] is True
 
     def test_payload_without_meta_is_left_alone(self):
         # Combined paths and timelines have no `meta` block; the helper has to
         # serialize them unchanged rather than inventing one.
-        raw = cache.serialize_cached({"sharedCourses": ["Bio 101"]})
-        assert json.loads(raw) == {"sharedCourses": ["Bio 101"]}
+        blob = cache.serialize_cached({"sharedCourses": ["Bio 101"]})
+        assert json.loads(cache.decompress(blob)) == {"sharedCourses": ["Bio 101"]}
+
+    def test_is_gzip(self):
+        """Stored compressed, and served that way — the browser accepts gzip, so
+        the read path hands these bytes over without decompressing them."""
+        blob = cache.serialize_cached({"meta": {"cached": False}})
+        assert blob.startswith(b"\x1f\x8b")
+
+    def test_is_byte_stable_for_the_same_payload(self):
+        """gzip stamps its header with the current time unless told not to.
+
+        Without a fixed mtime every rewrite of an unchanged payload produces
+        different bytes, which makes "did this entry actually change?" an
+        unanswerable question.
+        """
+        payload = {"meta": {"cached": False}, "alumni": [{"id": "a1"}]}
+        assert cache.serialize_cached(dict(payload)) == cache.serialize_cached(dict(payload))
 
     def test_non_ascii_is_not_escaped(self):
-        """The stored bytes must be what FastAPI would have sent.
+        """The stored bytes must decompress to what FastAPI would have sent.
 
         Escaping would still parse identically, but it makes a hit differ
         byte-for-byte from a miss — and match reasons are full of em dashes.
         """
-        raw = cache.serialize_cached({"matchReason": "Changed direction — like you"})
-        assert "—" in raw
-        assert "\\u2014" not in raw
+        blob = cache.serialize_cached({"matchReason": "Changed direction — like you"})
+        text = cache.decompress(blob).decode()
+        assert "—" in text
+        assert "\\u2014" not in text
+
+
+class TestFlushPattern:
+    """A `CACHE_VERSION` bump orphans the previous keyspace rather than freeing
+    it — entries stay resident until their TTL, which is now measured in days.
+    The flush is the only thing that reclaims them, so it must not be scoped to
+    the version that happens to be current."""
+
+    def test_matches_entries_from_older_cache_versions(self):
+        from fnmatch import fnmatch
+
+        for version in ("v2", "v5", "v6", cache.CACHE_VERSION):
+            key = f"constella:{version}:constellation:stu-1:abc123"
+            assert fnmatch(key, cache.FLUSH_PATTERN), version
+
+    def test_matches_every_kind_of_entry(self):
+        from fnmatch import fnmatch
+
+        for key in (
+            cache.constellation_key("stu-1", "abc"),
+            cache.timeline_key("stu-1", "alum-1"),
+            cache.combined_path_key("stu-1", ["a", "b"]),
+            cache.student_index_key("stu-1"),
+        ):
+            assert fnmatch(key, cache.FLUSH_PATTERN), key
 
 
 class TestTimelineKey:

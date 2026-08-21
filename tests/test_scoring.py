@@ -255,3 +255,56 @@ class TestComponentsDiscriminate:
         profile.current_majors = {"Engineering"}
         totals = {s.total for s in score_corpus(profile, self._corpus())}
         assert len(totals) > 1
+
+
+class TestTopNSelection:
+    """`top_n` must be indistinguishable from slicing the full ranking.
+
+    It skips a full sort via `argpartition`, which splits on the total alone and
+    breaks ties arbitrarily — so the cases that matter are the ones where a tie
+    lands on the boundary.
+    """
+
+    def _tied_corpus(self) -> list:
+        # Identical in every scoring input, so only the id tie-break separates
+        # them, and the cut falls in the middle of the tie group.
+        return [
+            make_alumnus(alumnus_id, courses=[("BIO 101", "Bio 101", 0)])
+            for alumnus_id in ("ccc", "aaa", "eee", "bbb", "ddd")
+        ]
+
+    def test_matches_the_full_ranking_prefix(self):
+        profile = make_profile()
+        alumni = [
+            make_alumnus("a1", courses=[("BIO 101", "Bio 101", 0)]),
+            make_alumnus("a2", courses=[("CHEM 101", "Chem 101", 1)], career_area="Software"),
+            make_alumnus("a3", courses=[], pivot_semester=None),
+            make_alumnus("a4", courses=[("BIO 101", "Bio 101", 0), ("CHEM 101", "Chem 101", 1)]),
+        ]
+        full = score_corpus(profile, alumni)
+        for k in range(1, len(alumni) + 3):
+            cut = score_corpus(profile, alumni, top_n=k)
+            assert [s.alumnus.id for s in cut] == [s.alumnus.id for s in full[:k]]
+            for left, right in zip(cut, full[:k], strict=True):
+                assert left.total == right.total
+                assert left.shared_courses == right.shared_courses
+
+    def test_a_tie_across_the_boundary_breaks_on_id(self):
+        profile = make_profile()
+        alumni = self._tied_corpus()
+        assert len({s.total for s in score_corpus(profile, alumni)}) == 1, "corpus must tie"
+
+        assert [s.alumnus.id for s in score_corpus(profile, alumni, top_n=2)] == ["aaa", "bbb"]
+        assert [s.alumnus.id for s in score_corpus(profile, alumni, top_n=4)] == [
+            "aaa",
+            "bbb",
+            "ccc",
+            "ddd",
+        ]
+
+    def test_top_n_beyond_the_corpus_returns_everything(self):
+        alumni = self._tied_corpus()
+        assert len(score_corpus(make_profile(), alumni, top_n=99)) == len(alumni)
+
+    def test_top_n_on_an_empty_corpus(self):
+        assert score_corpus(make_profile(), [], top_n=5) == []

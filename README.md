@@ -361,7 +361,7 @@ app/
   main.py            FastAPI app, CORS, router registration
   config.py          Settings from environment
   db.py              Async engine and session factory
-  cache.py           Redis keys, TTLs, invalidation
+  cache.py           Redis keys, TTLs, gzip storage, invalidation
   repository.py      Queries, with relationships eager-loaded
   models/            SQLAlchemy ORM
   schemas/           Pydantic — camelCase on the wire
@@ -370,13 +370,14 @@ app/
     programs.py      Major/minor accessors + set-diff pivots (the one seam)
     explain.py       matchReason, derived from the score components
     outcomes.py      Career-outcome accessor (the clustering axis)
+    corpus.py        Per-school prepared corpus (student-independent derivations)
     scoring.py       The weighted formula (NumPy-vectorized overlap)
     clustering.py    Career-outcome grouping and edge pruning
     timeline.py      Semester timeline for the detail panel
     combine.py       Path combining — merge saved paths + Sankey
     pipeline.py      score → rank → cut → cluster → prune
   jobs/
-    recompute.py     Background precompute
+    recompute.py     Background precompute (one corpus per school)
     derive_minors.py Infer de facto minors from course concentration
   eval/              Offline matching-quality harness
     metrics.py       Ranking + distribution metrics (pure)
@@ -392,7 +393,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               202 tests; only the security suite needs Postgres
+tests/               224 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

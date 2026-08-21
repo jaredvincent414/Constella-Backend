@@ -17,14 +17,15 @@ serves real students (see CLAUDE.md).
 
 from __future__ import annotations
 
+import secrets
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import repository
-from app.auth import current_student, new_token
+from app import cache, repository
+from app.auth import current_student, hash_password, new_token, verify_password
 from app.config import settings
 from app.db import get_session
 from app.jobs import recompute
@@ -34,6 +35,7 @@ from app.models import ActivityKind, School, Student, semester_label
 from app.schemas import (
     ActivityOut,
     CoursesUpdate,
+    LoginRequest,
     ProfileUpdate,
     RegisterRequest,
     RegisterResponse,
@@ -46,6 +48,33 @@ from app.schemas import (
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/students", tags=["students"])
+
+
+# A syntactically valid hash for a password nobody holds, so the no-such-student
+# branch performs the same work the found branch does.
+_ABSENT_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+
+
+async def _login_blocked(email: str, address: str) -> bool:
+    """Redis down means unthrottled rather than locked out. Availability of the
+    login route matters more than the throttle, which is defence in depth."""
+    try:
+        limit = settings.login_max_failures
+        return (
+            await cache.login_failures("email", email) >= limit
+            or await cache.login_failures("address", address) >= limit
+        )
+    except Exception:
+        return False
+
+
+async def _record_login_failure(email: str, address: str) -> None:
+    try:
+        window = settings.login_failure_window_seconds
+        await cache.record_login_failure("email", email, window)
+        await cache.record_login_failure("address", address, window)
+    except Exception:
+        log.warning("login_throttle_write_failed")
 
 
 async def _invalidate(student_id: str) -> None:
@@ -63,7 +92,11 @@ async def _invalidate(student_id: str) -> None:
 
 def _to_out(student: Student, school: School | None) -> StudentOut:
     majors = sorted(student_majors(student))
-    first_name, last_name = split_name(student.name)
+    # Prefer the columns; fall back to splitting `name` for rows that predate
+    # them and were somehow missed by the backfill.
+    first_name, last_name = student.first_name, student.last_name
+    if not first_name and not last_name:
+        first_name, last_name = split_name(student.name)
     return StudentOut(
         id=student.id,
         school_id=student.school_id,
@@ -127,16 +160,83 @@ async def register(
         raise HTTPException(status_code=409, detail="That email is already registered")
 
     token, token_hash = new_token()
+    first_name = (request.first_name or "").strip() or None
+    last_name = (request.last_name or "").strip() or None
     student = await repository.create_student(
         session,
         student_id=f"stu-{uuid4().hex[:16]}",
         school_id=school.id,
-        name=request.name,
+        # `name` stays the display value and the one older code reads; the two
+        # columns are what the form actually collected.
+        name=" ".join(p for p in (first_name, last_name) if p) or None,
+        first_name=first_name,
+        last_name=last_name,
+        password_hash=hash_password(request.password),
         email=request.email,
         year=request.year,
         auth_token_hash=token_hash,
     )
     return RegisterResponse(token=token, student=_to_out(student, school))
+
+
+@router.post("/login", response_model=RegisterResponse, response_model_by_alias=True)
+async def login(
+    request: Request,
+    body: LoginRequest,
+    session: AsyncSession = Depends(get_session),
+) -> RegisterResponse:
+    """Exchange email and password for a fresh bearer token.
+
+    Every failure returns the same 401 with the same body — an unknown address,
+    a wrong password, and an account that predates password auth are
+    indistinguishable from outside, so this cannot be used to enumerate who has
+    registered.
+
+    Failures are counted per email and per client address; whichever trips first
+    returns 429 until the window passes. The counters carry a TTL rather than
+    setting a lockout flag, so an attacker failing on someone's behalf costs
+    that person a wait, not their account.
+    """
+    address = request.client.host if request.client else "unknown"
+    if await _login_blocked(body.email, address):
+        raise HTTPException(
+            status_code=429, detail="Too many failed attempts. Try again later."
+        )
+
+    student = await repository.get_student_by_email(session, body.email)
+    # Verify even when there is no such student, against a throwaway hash, so a
+    # miss and a wrong password take comparable time. Timing is a weak channel
+    # here, but making it uniform costs one KDF call on a path that is already
+    # deliberately slow.
+    stored = student.password_hash if student else _ABSENT_PASSWORD_HASH
+    if not verify_password(body.password, stored) or student is None:
+        await _record_login_failure(body.email, address)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if student.school_id is None:
+        # Same fail-closed rule `current_student` applies: a null tenant means
+        # unscoped, so such an account must not receive a usable token.
+        raise HTTPException(status_code=403, detail="Student is not associated with a school")
+
+    token, token_hash = new_token()
+    previous_hash = await repository.rotate_auth_token(session, student, token_hash)
+    # The old token is dead in Postgres but its resolved principal is cached;
+    # without this it keeps authenticating for the auth-cache TTL.
+    for coro in (
+        cache.forget_principal(previous_hash) if previous_hash else None,
+        cache.clear_login_failures("email", body.email),
+        cache.clear_login_failures("address", address),
+    ):
+        if coro is None:
+            continue
+        try:
+            await coro
+        except Exception:
+            log.warning("login_cache_cleanup_failed", student_id=student.id)
+
+    refreshed = await repository.get_student(session, student.id)
+    assert refreshed is not None
+    return RegisterResponse(token=token, student=await _out_for(session, refreshed))
 
 
 @router.get("/me", response_model=StudentOut, response_model_by_alias=True)

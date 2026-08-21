@@ -345,7 +345,8 @@ touch it:
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/students/schools` | — | Schools available at registration |
-| `POST` | `/api/students/register` | — | Create a student, receive a token |
+| `POST` | `/api/students/register` | — | Sign up (school + password), receive a token |
+| `POST` | `/api/students/login` | — | Exchange email + password for a fresh token |
 | `GET` | `/api/students/me` | student | The caller's profile |
 | `GET` | `/api/students/me/activity` | student | Recent activity feed |
 | `PUT` | `/api/students/me` | student | Partial profile update |
@@ -468,7 +469,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               366 tests; only the security suite needs Postgres
+tests/               385 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

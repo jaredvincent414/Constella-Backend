@@ -133,6 +133,14 @@ async def _cleanup() -> None:
         except Exception:
             pass
 
+    # Login failures are counted per client address too, and every test shares
+    # one — left behind, they make whichever throttle test runs second start
+    # already blocked.
+    try:
+        await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+    except Exception:
+        pass
+
 
 @pytest.fixture
 async def seeded():
@@ -195,6 +203,25 @@ async def client():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as async_client:
         yield async_client
+
+
+PASSWORD = "a-long-enough-password"
+# What httpx's ASGI transport reports as the peer address. Every test in this
+# file shares it, which is exactly why the throttle counters have to be cleared
+# between them.
+TEST_CLIENT_ADDRESS = "127.0.0.1"
+
+
+def signup(**overrides) -> dict:
+    """A valid registration body. `schoolId` and `password` are both required —
+    the school because it is the tenant and immutable afterwards, the password
+    because an account without one can never log in."""
+    return {
+        "schoolId": SCHOOL_A,
+        "email": "new@test-sec.example.edu",
+        "password": PASSWORD,
+        **overrides,
+    }
 
 
 def auth(token: str) -> dict[str, str]:
@@ -338,12 +365,10 @@ async def test_timeline_cache_is_not_shared_between_students(client, seeded):
     """
     registered = await client.post(
         "/api/students/register",
-        json={
-            "schoolId": SCHOOL_A,
-            "email": "no-courses@test-sec.example.edu",
-            "name": "No Courses",
-            "year": "sophomore",
-        },
+        json=signup(
+            email="no-courses@test-sec.example.edu", firstName="No", lastName="Courses",
+            year="sophomore",
+        ),
     )
     assert registered.status_code == 201
     other = registered.json()["token"]
@@ -598,7 +623,7 @@ async def test_activity_is_newest_first_and_capped(client, seeded):
 async def test_register_issues_a_working_token(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "new@test-sec.example.edu", "name": "Cam"},
+        json=signup(firstName="Cam", lastName="Rivera"),
     )
     assert response.status_code == 201
     payload = response.json()
@@ -613,7 +638,7 @@ async def test_register_issues_a_working_token(client, seeded):
 async def test_register_stores_only_the_hash(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "hashed@test-sec.example.edu"},
+        json=signup(email="hashed@test-sec.example.edu"),
     )
     token = response.json()["token"]
     student_id = response.json()["student"]["id"]
@@ -627,7 +652,7 @@ async def test_register_stores_only_the_hash(client, seeded):
 async def test_register_rejects_unknown_school(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": "no-such-school", "email": "x@test-sec.example.edu"},
+        json=signup(schoolId="no-such-school", email="x@test-sec.example.edu"),
     )
     assert response.status_code == 404
 
@@ -635,16 +660,167 @@ async def test_register_rejects_unknown_school(client, seeded):
 async def test_register_rejects_duplicate_email(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "ada@test-sec.example.edu"},
+        json=signup(email="ada@test-sec.example.edu"),
     )
     assert response.status_code == 409
 
 
 async def test_register_rejects_malformed_email(client, seeded):
     response = await client.post(
-        "/api/students/register", json={"schoolId": SCHOOL_A, "email": "not-an-email"}
+        "/api/students/register", json=signup(email="not-an-email")
     )
     assert response.status_code == 422
+
+
+async def _register(client, **overrides):
+    return await client.post("/api/students/register", json=signup(**overrides))
+
+
+class TestPasswords:
+    async def test_the_password_is_never_stored(self, client, seeded):
+        created = await _register(client, email="pw@test-sec.example.edu")
+        assert created.status_code == 201
+        student_id = created.json()["student"]["id"]
+
+        async with SessionLocal() as session:
+            stored = await session.get(Student, student_id)
+            assert stored.password_hash
+            assert PASSWORD not in stored.password_hash
+            assert stored.password_hash.startswith("scrypt$")
+
+    async def test_the_hash_is_salted(self, client, seeded):
+        """Two accounts with the same password must not share a hash, or one
+        cracked password reveals every account that reused it."""
+        a = await _register(client, email="salt-a@test-sec.example.edu")
+        b = await _register(client, email="salt-b@test-sec.example.edu")
+        async with SessionLocal() as session:
+            first = await session.get(Student, a.json()["student"]["id"])
+            second = await session.get(Student, b.json()["student"]["id"])
+            assert first.password_hash != second.password_hash
+
+    async def test_the_response_never_echoes_the_password(self, client, seeded):
+        created = await _register(client, email="echo@test-sec.example.edu")
+        assert PASSWORD not in created.text
+
+
+class TestLogin:
+    async def test_returns_a_working_token(self, client, seeded):
+        await _register(client, email="login@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "login@test-sec.example.edu", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+        me = await client.get("/api/students/me", headers=auth(response.json()["token"]))
+        assert me.status_code == 200
+        assert me.json()["email"] == "login@test-sec.example.edu"
+
+    async def test_email_is_case_insensitive(self, client, seeded):
+        await _register(client, email="case@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "CASE@Test-Sec.Example.EDU", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+
+    async def test_a_wrong_password_is_rejected(self, client, seeded):
+        await _register(client, email="wrong@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "wrong@test-sec.example.edu", "password": "not-the-password"},
+        )
+        assert response.status_code == 401
+
+    async def test_an_unknown_account_is_indistinguishable_from_a_wrong_password(
+        self, client, seeded
+    ):
+        """Otherwise login is an oracle for who has registered."""
+        await _register(client, email="known@test-sec.example.edu")
+        wrong = await client.post(
+            "/api/students/login",
+            json={"email": "known@test-sec.example.edu", "password": "not-the-password"},
+        )
+        unknown = await client.post(
+            "/api/students/login",
+            json={"email": "nobody@test-sec.example.edu", "password": "not-the-password"},
+        )
+        assert wrong.status_code == unknown.status_code == 401
+        assert wrong.json() == unknown.json()
+
+    async def test_an_account_without_a_password_cannot_log_in(self, client, seeded):
+        """Every student seeded before password auth has a null hash. Such an
+        account must be unable to log in, never able to log in without one."""
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "ada@test-sec.example.edu", "password": PASSWORD},
+        )
+        assert response.status_code == 401
+
+    async def test_login_rotates_the_token_and_kills_the_old_one(self, client, seeded):
+        """The old token is dead in Postgres, but its principal is cached —
+        without eviction it keeps authenticating for the auth-cache TTL."""
+        created = await _register(client, email="rotate@test-sec.example.edu")
+        first_token = created.json()["token"]
+        assert (await client.get("/api/students/me", headers=auth(first_token))).status_code == 200
+
+        second = await client.post(
+            "/api/students/login",
+            json={"email": "rotate@test-sec.example.edu", "password": PASSWORD},
+        )
+        second_token = second.json()["token"]
+        assert second_token != first_token
+        assert (await client.get("/api/students/me", headers=auth(second_token))).status_code == 200
+        assert (await client.get("/api/students/me", headers=auth(first_token))).status_code == 401
+
+
+class TestLoginThrottling:
+    async def test_repeated_failures_are_blocked(self, client, seeded):
+        """Counters with a TTL, not a lockout flag — so this frees itself, and
+        an attacker failing on someone's behalf costs them a wait rather than
+        their account."""
+        email = "throttle@test-sec.example.edu"
+        await _register(client, email=email)
+        await cache.clear_login_failures("email", email)
+        try:
+            statuses = []
+            for _ in range(settings.login_max_failures + 2):
+                r = await client.post(
+                    "/api/students/login", json={"email": email, "password": "wrong-password"}
+                )
+                statuses.append(r.status_code)
+
+            assert statuses[0] == 401, "the first attempt must be judged on its merits"
+            assert 429 in statuses, "sustained failures must eventually be refused"
+
+            # Blocked means blocked even with the right password — the throttle
+            # is on the attempt, not on the outcome.
+            blocked = await client.post(
+                "/api/students/login", json={"email": email, "password": PASSWORD}
+            )
+            assert blocked.status_code == 429
+        finally:
+            await cache.clear_login_failures("email", email)
+            await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+
+    async def test_a_successful_login_clears_the_counter(self, client, seeded):
+        email = "clears@test-sec.example.edu"
+        await _register(client, email=email)
+        await cache.clear_login_failures("email", email)
+        await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+        try:
+            await client.post(
+                "/api/students/login", json={"email": email, "password": "wrong-password"}
+            )
+            assert await cache.login_failures("email", email) == 1
+
+            ok = await client.post(
+                "/api/students/login", json={"email": email, "password": PASSWORD}
+            )
+            assert ok.status_code == 200
+            assert await cache.login_failures("email", email) == 0
+        finally:
+            await cache.clear_login_failures("email", email)
+            await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
 
 
 async def test_profile_update_is_partial(client, seeded):

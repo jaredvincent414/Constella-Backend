@@ -43,6 +43,7 @@ from app.schemas.search import (
 from app.schemas.students import (
     ActivityOut,
     CoursesUpdate,
+    LoginRequest,
     ProfileUpdate,
     RegisterRequest,
     RegisterResponse,
@@ -55,6 +56,7 @@ from app.schemas.students import (
 
 __all__ = [
     "ActivityOut",
+    "LoginRequest",
     "AlumnusDetail",
     "AlumnusOut",
     "CamelModel",

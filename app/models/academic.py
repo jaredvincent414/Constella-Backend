@@ -130,9 +130,17 @@ class Student(Base):
     )
     # Identity. `auth_token_hash` is the SHA-256 of the student's bearer token;
     # the plaintext is shown once at registration and never stored.
+    # Kept as the display name and the source the columns below were backfilled
+    # from. New registrations write all three.
     name: Mapped[str | None] = mapped_column(String(160))
+    first_name: Mapped[str | None] = mapped_column(String(80))
+    last_name: Mapped[str | None] = mapped_column(String(80))
     email: Mapped[str | None] = mapped_column(String(200), unique=True)
     auth_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # Versioned KDF output, never the password. Nullable because every student
+    # created before password auth existed has none — and an account without a
+    # password must be unable to log in rather than able to log in without one.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     year: Mapped[StudentYear] = mapped_column(
         Enum(StudentYear, name="student_year", values_callable=lambda e: [m.value for m in e]),
         nullable=False,

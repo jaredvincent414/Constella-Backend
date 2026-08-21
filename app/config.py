@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # README still lists as missing. 0 disables the cache entirely.
     auth_cache_ttl_seconds: int = 60
 
+    # --- Login throttling -------------------------------------------------
+    # Counted per email and per client address; whichever trips first blocks.
+    # These are counters with a TTL, not a lockout flag, so a blocked identity
+    # frees itself — an attacker failing on someone's behalf costs them a wait,
+    # not their account.
+    login_max_failures: int = 10
+    login_failure_window_seconds: int = 900
+
     # Single-flight. On a miss, one caller computes and the rest wait for it
     # rather than all recomputing the same payload. The lock TTL bounds how long
     # a crashed holder can block others; the wait bounds how long a follower

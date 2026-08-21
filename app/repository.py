@@ -101,15 +101,21 @@ async def create_student(
     email: str | None,
     year: StudentYear,
     auth_token_hash: str,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    password_hash: str | None = None,
 ) -> Student:
     session.add(
         Student(
             id=student_id,
             school_id=school_id,
             name=name,
+            first_name=first_name,
+            last_name=last_name,
             email=email,
             year=year,
             auth_token_hash=auth_token_hash,
+            password_hash=password_hash,
             interests=[],
         )
     )
@@ -117,6 +123,24 @@ async def create_student(
     student = await get_student(session, student_id)
     assert student is not None
     return student
+
+
+async def rotate_auth_token(session: AsyncSession, student: Student, token_hash: str) -> str:
+    """Replace a student's token hash, returning the one it replaced.
+
+    Login mints a fresh token rather than handing back the existing one, which
+    cannot be done anyway: only the hash is stored. The consequence is a single
+    active session — signing in on a second device ends the first. Multiple
+    concurrent sessions need a tokens table, and that is a bigger change than
+    this endpoint.
+
+    The caller needs the old hash to evict its cached principal, or the previous
+    token keeps authenticating for the length of the auth-cache TTL.
+    """
+    previous = student.auth_token_hash
+    student.auth_token_hash = token_hash
+    await session.commit()
+    return previous or ""
 
 
 async def update_student_profile(

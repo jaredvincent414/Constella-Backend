@@ -96,6 +96,14 @@ class TestConstellationPayload:
 
 
 class TestTimeline:
+    def test_a_blank_course_name_falls_back_to_its_code(self):
+        """The corpus has titles for some catalogue entries and not others;
+        without the fallback the detail panel renders empty pills."""
+        profile = make_profile(courses=[])
+        alumnus = make_alumnus(courses=[("ENGE1005", "", 0)], pivot_semester=3)
+        names = [c.name for sem in build_semesters(alumnus, profile) for c in sem.courses]
+        assert names == ["ENGE1005"]
+
     def test_course_status_is_relative_to_the_student(self):
         profile = make_profile(courses=[("A", "Alpha")])
         alumnus = make_alumnus(

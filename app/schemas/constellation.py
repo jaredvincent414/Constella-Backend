@@ -209,23 +209,68 @@ class SimulationRequest(CamelModel):
     top_n: int | None = Field(default=None, ge=1, le=25)
 
 
-class SimulationMatch(CamelModel):
-    alumnus: AlumnusDetail
+class TransitionCourse(CamelModel):
+    """`tag` uses the same kept/new/dropped vocabulary as the detail panel.
+
+    The frontend contract sketched `null` for an unremarkable course. A null
+    that means a value is worse than the value: it reads as "unknown" at every
+    call site that doesn't already know better, and it would give this API two
+    vocabularies for one idea.
+    """
+
+    name: str
+    tag: str = Field(description="'kept' | 'new' | 'dropped'")
+
+
+class TransitionSemester(CamelModel):
+    semester: str = Field(description='e.g. "Sophomore Spring"')
+    pivot: bool = Field(description="Render this term with the diamond node")
+    courses: list[TransitionCourse]
+
+
+class TransitionCard(CamelModel):
+    """One alumnus's transition story, ready to render.
+
+    `careerOutcome` is the structured outcome rather than a pre-joined
+    "Title @ Org" string. On the placeholder dataset employment is
+    `provenance='synthetic'`, and a formatted display string strips the one
+    field that stops the UI presenting invented data as reported fact.
+    """
+
+    id: str = Field(description="Opens the same detail panel as a constellation node")
+    is_top_match: bool
+    class_year: int
+    match_percent: float = Field(ge=0.0, le=100.0)
+    from_major: str | None
+    to_major: str | None
     pivot_semester: str | None
-    pivot_from: str | None
-    pivot_to: str | None
-    # How the major set changed at the pivot: 'added' (kept the first major and
-    # gained another), 'dropped', or 'switched' (replaced). Lets the What-If UI
-    # distinguish "added a minor" from "switched majors".
+    # 'added' (kept the first major and gained another), 'dropped', or
+    # 'switched' (replaced). Lets the UI distinguish "added a second major"
+    # from "switched majors" rather than calling both a pivot.
     pivot_type: str | None = None
+    career_outcome: OutcomeOut
+    pre_pivot_summary: str
+    timeline: list[TransitionSemester]
 
 
 class SimulationResponse(CamelModel):
-    student: StudentContext
+    """The Transition page: a header of aggregates, then ranked cards.
+
+    The aggregates cover every candidate the pivot query matched, not the
+    handful returned. "12 alumni made this transition" is a fact about the
+    corpus — deriving it from the cards would make it a fact about page size.
+    """
+
     from_major: str | None
     to_major: str
-    matches: list[SimulationMatch]
-    total_candidates: int
+    total_transitions: int = Field(description="Alumni whose pivot answers this query")
+    # None rather than a guess when nothing pivoted: an alumnus can match a
+    # destination without a recorded pivot, and naming a peak over an empty set
+    # would be an invented finding.
+    peak_timing: str | None = Field(default=None, description='e.g. "sophomore and junior year"')
+    top_outcome: str | None = Field(default=None, description="Most common destination industry")
+    top_outcome_count: int = 0
+    cards: list[TransitionCard]
 
 
 ConstellationResponse.model_rebuild()

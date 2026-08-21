@@ -2,6 +2,10 @@
 
 Same scoring engine as the constellation, narrowed to alumni whose pivot
 actually answers the student's question and cut to the top 5.
+
+The response is the Transition page's shape: a header of aggregates computed
+over every matching candidate, then ranked cards. Card assembly lives in
+`app.matching.transitions` so it can be tested without a request.
 """
 
 from __future__ import annotations
@@ -13,20 +17,10 @@ from app import repository
 from app.auth import current_student
 from app.config import settings
 from app.db import get_session
-from app.matching import (
-    StudentProfile,
-    build_detail,
-    detect_pivots,
-    filter_by_pivot_query,
-    score_corpus,
-)
-from app.models import Student, StudentYear, semester_label
-from app.schemas import (
-    SimulationMatch,
-    SimulationRequest,
-    SimulationResponse,
-    StudentContext,
-)
+from app.matching import StudentProfile, filter_by_pivot_query, score_corpus
+from app.matching.transitions import build_card, peak_timing, top_outcome
+from app.models import Student
+from app.schemas import SimulationRequest, SimulationResponse
 
 router = APIRouter(prefix="/api", tags=["simulator"])
 
@@ -55,37 +49,17 @@ async def simulate(
     # whole filtered corpus, and the rest never need a breakdown built.
     scored = score_corpus(profile, candidates, top_n=top_n)
 
-    matches: list[SimulationMatch] = []
-    for item in scored:
-        pivot = item.alumnus.first_pivot
-        # Set-diff pivot type (added/dropped/switched) from the program timeline;
-        # matched to the stored pivot's term when there is one.
-        changes = detect_pivots(item.alumnus)
-        if pivot is not None:
-            change = next(
-                (c for c in changes if c.role == "major" and c.term == pivot.semester_index),
-                next((c for c in changes if c.role == "major"), None),
-            )
-        else:
-            change = next((c for c in changes if c.role == "major"), None)
-        matches.append(
-            SimulationMatch(
-                alumnus=build_detail(item, item.alumnus, profile),
-                pivot_semester=semester_label(pivot.semester_index) if pivot else None,
-                pivot_from=pivot.from_major if pivot else None,
-                pivot_to=pivot.to_major if pivot else None,
-                pivot_type=change.kind if change else None,
-            )
-        )
-
+    label, count = top_outcome(candidates)
     return SimulationResponse(
-        student=StudentContext(
-            year=StudentYear.from_index(profile.year_index).value,
-            interests=profile.interests,
-            courses=[profile.course_names[c] for c in profile.course_codes],
-        ),
         from_major=from_major,
         to_major=request.to_major,
-        matches=matches,
-        total_candidates=len(candidates),
+        # Over every candidate, not the cards: this is a fact about the corpus.
+        total_transitions=len(candidates),
+        peak_timing=peak_timing(candidates),
+        top_outcome=label,
+        top_outcome_count=count,
+        cards=[
+            build_card(item, profile, is_top_match=(index == 0))
+            for index, item in enumerate(scored)
+        ],
     )

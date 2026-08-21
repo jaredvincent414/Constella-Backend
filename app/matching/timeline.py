@@ -42,6 +42,17 @@ STATUS_ADDED = "new"
 STATUS_DROPPED = "dropped"
 
 
+def course_display_name(course) -> str:
+    """What to put on the pill.
+
+    58% of `alumnus_courses` rows carry a blank `course_name` — the MIDFIELD
+    adapter has titles for some catalogue entries and not others — so rendering
+    the name directly leaves the timeline full of empty pills. The code is never
+    blank and is what a registrar transcript shows anyway.
+    """
+    return course.course_name or course.course_code
+
+
 def build_semesters(
     alumnus: Alumnus,
     profile: StudentProfile | None = None,
@@ -54,7 +65,9 @@ def build_semesters(
         milestones_by_semester.setdefault(milestone.semester_index, []).append(milestone.text)
 
     courses_by_semester: dict[int, list[TimelineCourse]] = {}
-    for course in sorted(alumnus.courses, key=lambda c: (c.semester_index, c.course_name)):
+    for course in sorted(
+        alumnus.courses, key=lambda c: (c.semester_index, course_display_name(c))
+    ):
         if course.dropped:
             status = STATUS_DROPPED
         elif normalize_course_code(course.course_code) in student_codes:
@@ -64,7 +77,7 @@ def build_semesters(
         else:
             status = STATUS_ADDED
         courses_by_semester.setdefault(course.semester_index, []).append(
-            TimelineCourse(name=course.course_name, status=status)
+            TimelineCourse(name=course_display_name(course), status=status)
         )
 
     populated = set(courses_by_semester) | set(milestones_by_semester) | pivot_semesters

@@ -9,6 +9,7 @@ job or inline on a cache miss, without knowing which.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.config import settings
@@ -16,7 +17,12 @@ from app.matching.clustering import DEFAULT_MAX_CLUSTERS, build_cluster_edges, b
 from app.matching.explain import explain_match
 from app.matching.outcomes import build_outcome
 from app.matching.programs import program_views
-from app.matching.scoring import ScoredAlumnus, StudentProfile, score_corpus
+from app.matching.scoring import (
+    ScoredAlumnus,
+    StudentProfile,
+    filter_by_pivot_query,
+    score_corpus,
+)
 from app.models import Alumnus
 from app.schemas import (
     AlumnusOut,
@@ -108,6 +114,38 @@ def build_constellation(
         ),
     )
     return response, scored
+
+
+def build_constellation_for_query(
+    profile: StudentProfile,
+    alumni: list[Alumnus],
+    from_major: str | None = None,
+    to_major: str | None = None,
+    max_alumni: int | None = None,
+) -> ConstellationResponse:
+    """`build_constellation` with a pivot query applied first.
+
+    The request path and the nightly job both cache under a key derived from
+    (fromMajor, toMajor, limit), so they have to agree on what that key *means*
+    down to the last detail — a job that filtered differently would warm an
+    entry the route would never have produced, and the route would serve it.
+    Sharing one function is what makes them agree by construction rather than by
+    two copies staying in sync.
+
+    The profile is copied, not mutated: the job walks several queries for one
+    student, and an override leaking from one variant into the next would score
+    them against the wrong hypothetical.
+    """
+    if to_major:
+        alumni = filter_by_pivot_query(alumni, from_major, to_major)
+
+    if from_major:
+        profile = replace(profile, declared_major=from_major, current_majors={from_major})
+    if to_major:
+        profile = replace(profile, intended_direction=to_major)
+
+    response, _ = build_constellation(profile, alumni, max_alumni=max_alumni)
+    return response
 
 
 def _year_value(profile: StudentProfile) -> str:

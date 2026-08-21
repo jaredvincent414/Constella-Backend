@@ -1,5 +1,5 @@
 from app.matching.clustering import Cluster, ClusterEdge, build_cluster_edges, build_clusters
-from app.matching.pipeline import build_constellation
+from app.matching.pipeline import build_constellation, build_constellation_for_query
 from app.matching.programs import (
     ProgramPivot,
     ProgramView,
@@ -27,6 +27,7 @@ __all__ = [
     "build_cluster_edges",
     "build_clusters",
     "build_constellation",
+    "build_constellation_for_query",
     "build_detail",
     "build_semesters",
     "detect_pivots",

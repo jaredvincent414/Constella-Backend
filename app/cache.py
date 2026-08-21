@@ -221,6 +221,41 @@ async def forget_principal(token_hash: str) -> None:
     await get_client().delete(principal_key(token_hash))
 
 
+def login_attempt_key(scope: str, identifier: str) -> str:
+    """Failures are counted per email *and* per client address.
+
+    Per-address alone is bypassed by anything distributed; per-email alone lets
+    an attacker lock a known user out by failing on their behalf. Counting both
+    and blocking on either keeps spraying expensive without handing anyone an
+    account-denial button — and because these are counters with a TTL rather
+    than a lockout flag, the block lifts on its own.
+    """
+    digest = hashlib.sha256(identifier.encode()).hexdigest()[:16]
+    return f"constella:{CACHE_VERSION}:login:{scope}:{digest}"
+
+
+async def login_failures(scope: str, identifier: str) -> int:
+    raw = await get_client().get(login_attempt_key(scope, identifier))
+    try:
+        return int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+async def record_login_failure(scope: str, identifier: str, ttl: int) -> None:
+    key = login_attempt_key(scope, identifier)
+    async with get_client().pipeline(transaction=False) as pipe:
+        pipe.incr(key)
+        # Refreshed on every failure, so a sustained attack stays blocked rather
+        # than sliding out from under the window.
+        pipe.expire(key, ttl)
+        await pipe.execute()
+
+
+async def clear_login_failures(scope: str, identifier: str) -> None:
+    await get_client().delete(login_attempt_key(scope, identifier))
+
+
 async def track_student_key(student_id: str, key: str, params: dict | None = None) -> None:
     """Record that `key` belongs to `student_id`, along with the query that
     produced it so the nightly job can rebuild it.

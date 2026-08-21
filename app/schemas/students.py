@@ -12,6 +12,7 @@ import re
 
 from pydantic import Field, field_validator
 
+from app.auth import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH
 from app.models import StudentYear
 from app.schemas.constellation import CamelModel
 
@@ -28,9 +29,24 @@ class SchoolOut(CamelModel):
 
 
 class RegisterRequest(CamelModel):
+    """Signup. `schoolId` is required and has no default.
+
+    The frontend's form has no school field yet; `GET /api/students/schools`
+    exists to populate one. Deriving the school from the email domain was the
+    alternative and needs a domain-to-school mapping this service does not have
+    — and a wrong guess is not a cosmetic error: the school is the tenant, and
+    it is immutable through the API afterwards.
+    """
+
     school_id: str = Field(description="Slug from GET /api/students/schools")
     email: str = Field(max_length=200)
-    name: str | None = Field(default=None, max_length=160)
+    password: str = Field(
+        min_length=MIN_PASSWORD_LENGTH,
+        max_length=MAX_PASSWORD_LENGTH,
+        description="Stored only as a scrypt hash",
+    )
+    first_name: str | None = Field(default=None, max_length=80)
+    last_name: str | None = Field(default=None, max_length=80)
     year: StudentYear = StudentYear.freshman
 
     @field_validator("email")
@@ -41,6 +57,30 @@ class RegisterRequest(CamelModel):
         if not _EMAIL_RE.match(normalized):
             raise ValueError("not a valid email address")
         return normalized
+
+    @field_validator("password")
+    @classmethod
+    def _check_password(cls, value: str) -> str:
+        # Length only. Composition rules ("one symbol, one digit") push people
+        # towards shorter, more predictable passwords, and this is not the place
+        # to relitigate that — a real deployment puts SSO in front of it anyway.
+        if len(value.strip()) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+        return value
+
+
+class LoginRequest(CamelModel):
+    email: str = Field(max_length=200)
+    password: str = Field(max_length=MAX_PASSWORD_LENGTH)
+
+    @field_validator("email")
+    @classmethod
+    def _normalize(cls, value: str) -> str:
+        # Normalized to match how registration stored it, so casing can't turn
+        # one account into two. Deliberately *not* format-validated: login must
+        # answer the same way for a malformed address as for an unknown one, and
+        # a 422 here would say "no such account" out loud.
+        return value.strip().lower()
 
 
 def split_name(full_name: str | None) -> tuple[str | None, str | None]:
@@ -133,3 +173,17 @@ class CoursesUpdate(CamelModel):
     courses: list[StudentCourseIn] = Field(
         description="The full transcript — this replaces what's stored, it does not merge"
     )
+
+
+class ActivityOut(CamelModel):
+    """One line in the Dashboard's recent-activity feed.
+
+    `label` is served as stored, not reassembled. The feed records what the
+    student did at the time — if a cluster is renamed or a saved path deleted,
+    the entry should still read the way it read then.
+    """
+
+    id: int
+    kind: str = Field(description="'explored' | 'saved_path' | 'simulated' | …")
+    label: str
+    at: str = Field(description="ISO-8601 timestamp")

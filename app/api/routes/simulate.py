@@ -19,7 +19,7 @@ from app.config import settings
 from app.db import get_session
 from app.matching import StudentProfile, filter_by_pivot_query, score_corpus
 from app.matching.transitions import build_card, peak_timing, top_outcome
-from app.models import Student
+from app.models import ActivityKind, Student
 from app.schemas import SimulationRequest, SimulationResponse
 
 router = APIRouter(prefix="/api", tags=["simulator"])
@@ -48,6 +48,13 @@ async def simulate(
     # Cut inside the scorer: a What If keeps a handful of matches out of the
     # whole filtered corpus, and the rest never need a breakdown built.
     scored = score_corpus(profile, candidates, top_n=top_n)
+
+    await repository.record_activity(
+        session,
+        student.id,
+        ActivityKind.simulated,
+        f"Simulated a move to {request.to_major}"[:200],
+    )
 
     label, count = top_outcome(candidates)
     return SimulationResponse(

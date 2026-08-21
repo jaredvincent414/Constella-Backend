@@ -34,6 +34,7 @@ Tokens assume the transport is TLS.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 from dataclasses import dataclass
@@ -51,6 +52,78 @@ from app.models import Student
 
 def hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# Passwords
+# --------------------------------------------------------------------------
+#
+# `hashlib.scrypt` rather than a dependency: it is memory-hard (unlike PBKDF2,
+# which a GPU parallelises cheaply), it ships with CPython against OpenSSL, and
+# it needed no new package. argon2id would be the better answer and is the
+# intended upgrade — which is why the stored string carries its algorithm and
+# parameters. `verify_password` dispatches on that prefix, so a later scheme can
+# be introduced and old hashes rehashed on next login rather than in a flag day.
+#
+# n=2**14, r=8, p=1 are RFC 7914's interactive-login parameters: ~16MB and a few
+# tens of milliseconds per attempt. Raising `n` later is safe — existing hashes
+# carry the `n` they were made with.
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_SALT_BYTES = 16
+SCRYPT_KEY_BYTES = 32
+
+# Long enough to matter, short enough that a paste-bomb can't tie up a worker
+# in a memory-hard KDF. bcrypt's 72-byte limit is not a constraint here, but a
+# ceiling still is.
+MIN_PASSWORD_LENGTH = 10
+MAX_PASSWORD_LENGTH = 256
+
+
+def hash_password(password: str) -> str:
+    """`scrypt$n$r$p$salt$key`, all base64. Never the password itself."""
+    salt = secrets.token_bytes(SCRYPT_SALT_BYTES)
+    key = hashlib.scrypt(
+        password.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_KEY_BYTES
+    )
+    return "$".join(
+        [
+            "scrypt",
+            str(SCRYPT_N),
+            str(SCRYPT_R),
+            str(SCRYPT_P),
+            base64.b64encode(salt).decode(),
+            base64.b64encode(key).decode(),
+        ]
+    )
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    """Constant-time compare against a stored hash.
+
+    A null or unparseable hash is a failure, not an error: students created
+    before password auth have none, and such an account must be unable to log in
+    rather than able to log in without a password.
+    """
+    if not stored or not password:
+        return False
+    try:
+        scheme, n, r, p, salt_b64, key_b64 = stored.split("$")
+        if scheme != "scrypt":
+            return False
+        expected = base64.b64decode(key_b64)
+        actual = hashlib.scrypt(
+            password.encode(),
+            salt=base64.b64decode(salt_b64),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(expected),
+        )
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(actual, expected)
 
 
 def new_token() -> tuple[str, str]:

@@ -39,6 +39,13 @@ SCHOOL_A = "test-sec-school-a"
 SCHOOL_B = "test-sec-school-b"
 ALUM_A = "test-sec-alum-a"
 ALUM_B = "test-sec-alum-b"
+# School B's alumnus with vocabulary that appears nowhere else, so a search run
+# as School A either finds it or the tenant boundary has a hole.
+SEARCH_ALUM_B = "test-sec-search-alum-b"
+SEARCH_MAJOR_B = "Test Sec Xenobiology"
+SEARCH_AREA_B = "Test Sec Xenopolicy"
+SEARCH_COURSE_B = "XENO 999"
+SEARCH_TERM = "xeno"
 STUDENT_A = "test-sec-stu-a"
 STUDENT_B = "test-sec-stu-b"
 TOKEN_A = "test-sec-token-a"
@@ -75,7 +82,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
+def _alumnus(
+    alumnus_id: str,
+    school_id: str,
+    career_area: str,
+    major: str = "Biochemistry",
+    courses: list[tuple[str, str, int]] | None = None,
+) -> Alumnus:
     alumnus = Alumnus(
         id=alumnus_id,
         school_id=school_id,
@@ -86,10 +99,14 @@ def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
         interests=["Global Health Club"],
     )
     alumnus.courses = [
-        AlumnusCourse(course_code="BIO 101", course_name="Bio 101", semester_index=0),
-        AlumnusCourse(course_code="PH 201", course_name="Intro to Public Health", semester_index=3),
+        AlumnusCourse(course_code=code, course_name=name, semester_index=semester)
+        for code, name, semester in courses
+        or [
+            ("BIO 101", "Bio 101", 0),
+            ("PH 201", "Intro to Public Health", 3),
+        ]
     ]
-    alumnus.majors = [AlumnusMajor(name="Biochemistry", declared_semester=1, is_final=True)]
+    alumnus.majors = [AlumnusMajor(name=major, declared_semester=1, is_final=True)]
     alumnus.outcomes = [
         CareerOutcome(industry=career_area, occupation="Analyst", years_post_grad=1)
     ]
@@ -99,7 +116,9 @@ def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
 async def _cleanup() -> None:
     async with SessionLocal() as session:
         await session.execute(delete(Student).where(Student.id.in_([STUDENT_A, STUDENT_B])))
-        await session.execute(delete(Alumnus).where(Alumnus.id.in_([ALUM_A, ALUM_B])))
+        await session.execute(
+            delete(Alumnus).where(Alumnus.id.in_([ALUM_A, ALUM_B, SEARCH_ALUM_B]))
+        )
         # Any student registered through the API during a test.
         await session.execute(delete(Student).where(Student.school_id.in_([SCHOOL_A, SCHOOL_B])))
         await session.execute(delete(School).where(School.id.in_([SCHOOL_A, SCHOOL_B])))
@@ -113,6 +132,14 @@ async def _cleanup() -> None:
             await cache.forget_principal(hash_token(token))
         except Exception:
             pass
+
+    # Login failures are counted per client address too, and every test shares
+    # one — left behind, they make whichever throttle test runs second start
+    # already blocked.
+    try:
+        await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -132,6 +159,13 @@ async def seeded():
             [
                 _alumnus(ALUM_A, SCHOOL_A, "Health Policy"),
                 _alumnus(ALUM_B, SCHOOL_B, "Health Policy"),
+                _alumnus(
+                    SEARCH_ALUM_B,
+                    SCHOOL_B,
+                    SEARCH_AREA_B,
+                    major=SEARCH_MAJOR_B,
+                    courses=[(SEARCH_COURSE_B, "Xenobiology Seminar", 4)],
+                ),
             ]
         )
         student_a = Student(
@@ -171,6 +205,25 @@ async def client():
         yield async_client
 
 
+PASSWORD = "a-long-enough-password"
+# What httpx's ASGI transport reports as the peer address. Every test in this
+# file shares it, which is exactly why the throttle counters have to be cleared
+# between them.
+TEST_CLIENT_ADDRESS = "127.0.0.1"
+
+
+def signup(**overrides) -> dict:
+    """A valid registration body. `schoolId` and `password` are both required —
+    the school because it is the tenant and immutable afterwards, the password
+    because an account without one can never log in."""
+    return {
+        "schoolId": SCHOOL_A,
+        "email": "new@test-sec.example.edu",
+        "password": PASSWORD,
+        **overrides,
+    }
+
+
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -191,12 +244,15 @@ def _alumni_ids(payload: dict) -> set[str]:
         ("get", "/api/constellation", None),
         ("get", f"/api/alumni/{ALUM_A}/timeline", None),
         ("post", "/api/simulate", {"toMajor": "Health Policy"}),
+        ("get", "/api/search?q=biology", None),
         ("get", "/api/paths", None),
         ("post", "/api/paths", {"alumnusId": ALUM_A}),
         ("post", "/api/paths/combine", {"pathIds": [1, 2]}),
         ("get", "/api/students/me", None),
+        ("get", "/api/students/me/activity", None),
         ("put", "/api/students/me", {"year": "junior"}),
         ("put", "/api/students/me/courses", {"courses": []}),
+        ("get", "/api/students/me/dashboard", None),
     ],
 )
 async def test_student_routes_require_a_token(client, seeded, method, path, body):
@@ -309,12 +365,10 @@ async def test_timeline_cache_is_not_shared_between_students(client, seeded):
     """
     registered = await client.post(
         "/api/students/register",
-        json={
-            "schoolId": SCHOOL_A,
-            "email": "no-courses@test-sec.example.edu",
-            "name": "No Courses",
-            "year": "sophomore",
-        },
+        json=signup(
+            email="no-courses@test-sec.example.edu", firstName="No", lastName="Courses",
+            year="sophomore",
+        ),
     )
     assert registered.status_code == 201
     other = registered.json()["token"]
@@ -391,6 +445,74 @@ async def test_constellation_only_contains_your_school(client, seeded):
     assert ALUM_B not in alumni_ids
 
 
+def _search(client, token: str, query: str):
+    return client.get("/api/search", params={"q": query}, headers=auth(token))
+
+
+async def test_search_never_crosses_the_school_boundary(client, seeded):
+    """The whole point of the typeahead is to name what exists. School B has an
+    alumnus whose major, career area, and course code appear nowhere in School
+    A's corpus; searching for them as A must come back empty, because a row here
+    would confirm the existence of records A is not allowed to read.
+
+    Run as B first: an empty result for A proves nothing if the term matches
+    nothing anywhere.
+    """
+    theirs = await _search(client, TOKEN_B, SEARCH_TERM)
+    assert theirs.status_code == 200
+    found = theirs.json()["results"]
+    assert {r["type"] for r in found} == {"major", "cluster", "alumnus"}
+    assert {r["label"] for r in found} >= {SEARCH_MAJOR_B, SEARCH_AREA_B}
+    assert SEARCH_ALUM_B in {r["id"] for r in found}
+
+    mine = await _search(client, TOKEN_A, SEARCH_TERM)
+    assert mine.status_code == 200
+    assert mine.json() == {"query": SEARCH_TERM, "results": [], "total": 0}
+
+
+async def test_search_alumni_rows_are_only_your_school(client, seeded):
+    """Both schools' alumni took BIO 101, so this is the case where a missing
+    `school_id` on the course query would silently return the other tenant's
+    ids — the same corpus boundary the constellation holds."""
+    response = await _search(client, TOKEN_A, "bio 101")
+    assert response.status_code == 200
+    ids = {r["id"] for r in response.json()["results"] if r["type"] == "alumnus"}
+    assert ids == {ALUM_A}
+
+
+async def test_search_labels_a_synthetic_career_outcome(client, seeded):
+    """The cluster label comes from seeded employment data on this corpus. It
+    reaches the UI here, so it has to carry the flag that says it is a
+    placeholder — the same rule the constellation node follows."""
+    response = await _search(client, TOKEN_B, SEARCH_TERM)
+    clusters = [r for r in response.json()["results"] if r["type"] == "cluster"]
+    assert [c["provenance"] for c in clusters] == ["synthetic"]
+async def test_dashboard_only_counts_your_school(client, seeded):
+    """The stats are a projection of the constellation, so they inherit its
+    boundary — but a projection is new code, and a boundary that holds only in
+    the route it was first written for is not a boundary."""
+    try:
+        await cache.invalidate_student(STUDENT_A)
+    except Exception:
+        pass  # Redis down — then the route computes inline, which is the point.
+
+    response = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_A))
+    assert response.status_code == 200
+    body = response.json()
+    assert {match["id"] for match in body["topMatches"]} == {ALUM_A}
+    assert body["stats"]["alumniMatches"] == 1
+
+
+async def test_dashboard_counts_only_your_own_saved_paths(client, seeded):
+    created = await client.post("/api/paths", json={"alumnusId": ALUM_A}, headers=auth(TOKEN_A))
+    assert created.status_code == 201
+
+    mine = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_A))
+    theirs = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_B))
+    assert mine.json()["stats"]["savedPaths"] == 1
+    assert theirs.json()["stats"]["savedPaths"] == 0
+
+
 async def test_cannot_bookmark_another_schools_alumnus(client, seeded):
     response = await client.post("/api/paths", json={"alumnusId": ALUM_B}, headers=auth(TOKEN_A))
     assert response.status_code == 404
@@ -456,6 +578,43 @@ async def test_profile_matches_the_frontend_contract(client, seeded):
     assert course["semester"] == "Freshman Fall"
 
 
+async def test_activity_feed_is_per_student(client, seeded):
+    """A feed is a record of one person's actions. There is no route that takes
+    a student id, so reading someone else's is unexpressible rather than denied
+    — this pins that the rows are scoped too."""
+    await client.put(
+        "/api/students/me", json={"intendedDirection": "Health Policy"}, headers=auth(TOKEN_A)
+    )
+
+    mine = await client.get("/api/students/me/activity", headers=auth(TOKEN_A))
+    theirs = await client.get("/api/students/me/activity", headers=auth(TOKEN_B))
+    assert mine.status_code == 200 and theirs.status_code == 200
+    assert len(mine.json()) == 1
+    assert theirs.json() == []
+
+
+async def test_activity_collapses_a_burst_of_identical_actions(client, seeded):
+    """Toggling the same control three times should leave one line, not three."""
+    for _ in range(3):
+        await client.put(
+            "/api/students/me", json={"intendedDirection": "Health Policy"}, headers=auth(TOKEN_A)
+        )
+    feed = (await client.get("/api/students/me/activity", headers=auth(TOKEN_A))).json()
+    assert [e["kind"] for e in feed] == ["updated_profile"]
+
+
+async def test_activity_is_newest_first_and_capped(client, seeded):
+    await client.put("/api/students/me", json={"year": "junior"}, headers=auth(TOKEN_A))
+    await client.put(
+        "/api/students/me/courses",
+        json={"courses": [{"code": "PH 310", "name": "Epidemiology", "semesterIndex": 3}]},
+        headers=auth(TOKEN_A),
+    )
+    feed = (await client.get("/api/students/me/activity?limit=1", headers=auth(TOKEN_A))).json()
+    assert len(feed) == 1
+    assert feed[0]["kind"] == "updated_courses"
+
+
 # --------------------------------------------------------------------------
 # Registration and profile
 # --------------------------------------------------------------------------
@@ -464,7 +623,7 @@ async def test_profile_matches_the_frontend_contract(client, seeded):
 async def test_register_issues_a_working_token(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "new@test-sec.example.edu", "name": "Cam"},
+        json=signup(firstName="Cam", lastName="Rivera"),
     )
     assert response.status_code == 201
     payload = response.json()
@@ -479,7 +638,7 @@ async def test_register_issues_a_working_token(client, seeded):
 async def test_register_stores_only_the_hash(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "hashed@test-sec.example.edu"},
+        json=signup(email="hashed@test-sec.example.edu"),
     )
     token = response.json()["token"]
     student_id = response.json()["student"]["id"]
@@ -493,7 +652,7 @@ async def test_register_stores_only_the_hash(client, seeded):
 async def test_register_rejects_unknown_school(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": "no-such-school", "email": "x@test-sec.example.edu"},
+        json=signup(schoolId="no-such-school", email="x@test-sec.example.edu"),
     )
     assert response.status_code == 404
 
@@ -501,16 +660,167 @@ async def test_register_rejects_unknown_school(client, seeded):
 async def test_register_rejects_duplicate_email(client, seeded):
     response = await client.post(
         "/api/students/register",
-        json={"schoolId": SCHOOL_A, "email": "ada@test-sec.example.edu"},
+        json=signup(email="ada@test-sec.example.edu"),
     )
     assert response.status_code == 409
 
 
 async def test_register_rejects_malformed_email(client, seeded):
     response = await client.post(
-        "/api/students/register", json={"schoolId": SCHOOL_A, "email": "not-an-email"}
+        "/api/students/register", json=signup(email="not-an-email")
     )
     assert response.status_code == 422
+
+
+async def _register(client, **overrides):
+    return await client.post("/api/students/register", json=signup(**overrides))
+
+
+class TestPasswords:
+    async def test_the_password_is_never_stored(self, client, seeded):
+        created = await _register(client, email="pw@test-sec.example.edu")
+        assert created.status_code == 201
+        student_id = created.json()["student"]["id"]
+
+        async with SessionLocal() as session:
+            stored = await session.get(Student, student_id)
+            assert stored.password_hash
+            assert PASSWORD not in stored.password_hash
+            assert stored.password_hash.startswith("scrypt$")
+
+    async def test_the_hash_is_salted(self, client, seeded):
+        """Two accounts with the same password must not share a hash, or one
+        cracked password reveals every account that reused it."""
+        a = await _register(client, email="salt-a@test-sec.example.edu")
+        b = await _register(client, email="salt-b@test-sec.example.edu")
+        async with SessionLocal() as session:
+            first = await session.get(Student, a.json()["student"]["id"])
+            second = await session.get(Student, b.json()["student"]["id"])
+            assert first.password_hash != second.password_hash
+
+    async def test_the_response_never_echoes_the_password(self, client, seeded):
+        created = await _register(client, email="echo@test-sec.example.edu")
+        assert PASSWORD not in created.text
+
+
+class TestLogin:
+    async def test_returns_a_working_token(self, client, seeded):
+        await _register(client, email="login@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "login@test-sec.example.edu", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+        me = await client.get("/api/students/me", headers=auth(response.json()["token"]))
+        assert me.status_code == 200
+        assert me.json()["email"] == "login@test-sec.example.edu"
+
+    async def test_email_is_case_insensitive(self, client, seeded):
+        await _register(client, email="case@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "CASE@Test-Sec.Example.EDU", "password": PASSWORD},
+        )
+        assert response.status_code == 200
+
+    async def test_a_wrong_password_is_rejected(self, client, seeded):
+        await _register(client, email="wrong@test-sec.example.edu")
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "wrong@test-sec.example.edu", "password": "not-the-password"},
+        )
+        assert response.status_code == 401
+
+    async def test_an_unknown_account_is_indistinguishable_from_a_wrong_password(
+        self, client, seeded
+    ):
+        """Otherwise login is an oracle for who has registered."""
+        await _register(client, email="known@test-sec.example.edu")
+        wrong = await client.post(
+            "/api/students/login",
+            json={"email": "known@test-sec.example.edu", "password": "not-the-password"},
+        )
+        unknown = await client.post(
+            "/api/students/login",
+            json={"email": "nobody@test-sec.example.edu", "password": "not-the-password"},
+        )
+        assert wrong.status_code == unknown.status_code == 401
+        assert wrong.json() == unknown.json()
+
+    async def test_an_account_without_a_password_cannot_log_in(self, client, seeded):
+        """Every student seeded before password auth has a null hash. Such an
+        account must be unable to log in, never able to log in without one."""
+        response = await client.post(
+            "/api/students/login",
+            json={"email": "ada@test-sec.example.edu", "password": PASSWORD},
+        )
+        assert response.status_code == 401
+
+    async def test_login_rotates_the_token_and_kills_the_old_one(self, client, seeded):
+        """The old token is dead in Postgres, but its principal is cached —
+        without eviction it keeps authenticating for the auth-cache TTL."""
+        created = await _register(client, email="rotate@test-sec.example.edu")
+        first_token = created.json()["token"]
+        assert (await client.get("/api/students/me", headers=auth(first_token))).status_code == 200
+
+        second = await client.post(
+            "/api/students/login",
+            json={"email": "rotate@test-sec.example.edu", "password": PASSWORD},
+        )
+        second_token = second.json()["token"]
+        assert second_token != first_token
+        assert (await client.get("/api/students/me", headers=auth(second_token))).status_code == 200
+        assert (await client.get("/api/students/me", headers=auth(first_token))).status_code == 401
+
+
+class TestLoginThrottling:
+    async def test_repeated_failures_are_blocked(self, client, seeded):
+        """Counters with a TTL, not a lockout flag — so this frees itself, and
+        an attacker failing on someone's behalf costs them a wait rather than
+        their account."""
+        email = "throttle@test-sec.example.edu"
+        await _register(client, email=email)
+        await cache.clear_login_failures("email", email)
+        try:
+            statuses = []
+            for _ in range(settings.login_max_failures + 2):
+                r = await client.post(
+                    "/api/students/login", json={"email": email, "password": "wrong-password"}
+                )
+                statuses.append(r.status_code)
+
+            assert statuses[0] == 401, "the first attempt must be judged on its merits"
+            assert 429 in statuses, "sustained failures must eventually be refused"
+
+            # Blocked means blocked even with the right password — the throttle
+            # is on the attempt, not on the outcome.
+            blocked = await client.post(
+                "/api/students/login", json={"email": email, "password": PASSWORD}
+            )
+            assert blocked.status_code == 429
+        finally:
+            await cache.clear_login_failures("email", email)
+            await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+
+    async def test_a_successful_login_clears_the_counter(self, client, seeded):
+        email = "clears@test-sec.example.edu"
+        await _register(client, email=email)
+        await cache.clear_login_failures("email", email)
+        await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
+        try:
+            await client.post(
+                "/api/students/login", json={"email": email, "password": "wrong-password"}
+            )
+            assert await cache.login_failures("email", email) == 1
+
+            ok = await client.post(
+                "/api/students/login", json={"email": email, "password": PASSWORD}
+            )
+            assert ok.status_code == 200
+            assert await cache.login_failures("email", email) == 0
+        finally:
+            await cache.clear_login_failures("email", email)
+            await cache.clear_login_failures("address", TEST_CLIENT_ADDRESS)
 
 
 async def test_profile_update_is_partial(client, seeded):

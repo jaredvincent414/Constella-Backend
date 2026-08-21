@@ -248,6 +248,49 @@ resolution reduces to de-duplicating the same course; and course identity is the
 normalized code, so overlap (and thus `confidence`) only registers within an
 institution — arbitrary cross-institution pairs often share nothing.
 
+## Search
+
+`GET /api/search?q=bioch` backs the topbar's "Search paths, majors…" box. One
+flat list of uniformly-shaped rows across three kinds:
+
+```json
+{
+  "query": "bioch",
+  "results": [
+    { "type": "major",   "id": "biochemistry",   "label": "Biochemistry",        "detail": "13 alumni", "count": 13, "provenance": null },
+    { "type": "cluster", "id": "health-policy",  "label": "Health Policy",       "detail": "9 alumni",  "count": 9,  "provenance": "synthetic" },
+    { "type": "alumnus", "id": "alum-42",        "label": "Class of 1990",       "detail": "Engineering → Chemical Engineering · CHE2114", "count": null, "provenance": null }
+  ],
+  "total": 3
+}
+```
+
+Matching is `ILIKE '%q%'` ranked by pg_trgm `similarity()`, served by the GIN
+trigram indexes on `alumnus_majors.name`, `alumni.career_area`, and
+`alumnus_courses.course_code`. Substring rather than similarity alone because
+this is a typeahead: "bioch" has to reach "Biochemistry", and a threshold loose
+enough for a five-character prefix admits most of the corpus with it.
+
+Four decisions worth stating:
+
+* **`limit` is per type** (default 5). Course-code matches are numerous and
+  score almost identically to each other, so one global cut would let a common
+  prefix fill the dropdown with alumni and hide the major being typed.
+* **An alumnus matches on course code only.** Majors and career areas have
+  result kinds of their own; an alumnus row restating the major you just typed
+  is noise beside the major row. "Who took ORGO 201" has no other answer.
+* **Cluster ids are the constellation's cluster ids** — `slugify` over the same
+  `outcome_industry` the map clusters on, resolved per alumnus rather than read
+  off `career_area`, so a selected row names a cluster that exists. That label
+  carries `provenance` when it came from seeded employment data.
+* **Queries under three characters return empty.** Below that an `ILIKE '%q%'`
+  contains no whole trigram and the indexes can't be used, so every keystroke
+  would scan the corpus — for a prefix matching most of it.
+
+Results are scoped to the caller's school like every other alumni read: a major,
+cluster, or course code from another school never appears, since a row here
+would confirm the existence of records the caller cannot read.
+
 ## Auth & multi-tenancy
 
 Every student-facing route resolves its subject from an opaque bearer token, and
@@ -302,10 +345,13 @@ touch it:
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/students/schools` | — | Schools available at registration |
-| `POST` | `/api/students/register` | — | Create a student, receive a token |
+| `POST` | `/api/students/register` | — | Sign up (school + password), receive a token |
+| `POST` | `/api/students/login` | — | Exchange email + password for a fresh token |
 | `GET` | `/api/students/me` | student | The caller's profile |
+| `GET` | `/api/students/me/activity` | student | Recent activity feed |
 | `PUT` | `/api/students/me` | student | Partial profile update |
 | `PUT` | `/api/students/me/courses` | student | Replace the transcript |
+| `GET` | `/api/students/me/dashboard` | student | Dashboard stats + top matches |
 | `GET` | `/api/constellation` | student | Full constellation payload |
 | `GET` | `/api/alumni/{id}/timeline` | student | Lazily-fetched detail panel |
 | `POST` | `/api/simulate` | student | What If Simulator — aggregates + top 5 cards |
@@ -313,10 +359,19 @@ touch it:
 | `POST` | `/api/paths` | student | Bookmark an alumnus path (idempotent) |
 | `DELETE` | `/api/paths/{id}` | student | Remove a saved path |
 | `POST` | `/api/paths/combine` | student | Merge 2+ saved paths into one plan |
+| `GET` | `/api/search?q=` | student | Typeahead across majors, clusters, and alumni |
 | `GET` | `/health/ready` | — | Postgres + Redis status |
 | `POST` | `/api/admin/recompute` | admin | Rebuild all cached constellations |
 | `POST` | `/api/admin/recompute/{studentId}` | admin | Rebuild or invalidate one student |
 | `DELETE` | `/api/admin/cache` | admin | Flush cached constellations |
+
+`GET /api/students/me/dashboard` is a projection of the caller's constellation —
+the same cached entry `/api/constellation` serves — plus a live count of their
+saved paths, so a stat card can't disagree with the map it links to. Note what
+it does *not* answer: the design's "Clusters Explored" card means clusters the
+student has **visited**, which would need an activity log this service doesn't
+keep. It returns the number of clusters in the constellation being explored and
+says so in the field description, rather than inventing a visit count.
 
 `GET /api/constellation` also accepts:
 
@@ -380,6 +435,7 @@ app/
   cache.py           Redis keys, TTLs, gzip storage, invalidation
   api/responses.py   Cached-response encoding, ETag/304
   repository.py      Queries, with relationships eager-loaded
+  search.py          Typeahead row shaping and ordering (pure)
   models/            SQLAlchemy ORM
   schemas/           Pydantic — camelCase on the wire
   matching/
@@ -408,11 +464,12 @@ app/
     cip.py           CIP code → major name / career area
     sources/         midfield.py, template.py, registry
   auth.py            Bearer tokens, current_student, admin gate
-  api/routes/        students, constellation, alumni, simulate, paths, admin, health
+  api/routes/        students, dashboard, constellation, alumni, search,
+                     simulate, paths, admin, health
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               291 tests; only the security suite needs Postgres
+tests/               385 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

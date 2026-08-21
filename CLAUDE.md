@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 291 tests
+pytest                                    # 385 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -89,11 +89,30 @@ The security boundary is covered by [tests/test_api_security.py](tests/test_api_
 unit). If you touch auth or scoping, those tests must still pass and probably
 need a new case.
 
+7. **Passwords are stored only as a versioned KDF hash.** `hash_password` emits
+   `scrypt$n$r$p$salt$key`; `verify_password` dispatches on that prefix, so
+   argon2id can replace scrypt without a flag day. A **null** `password_hash`
+   means *cannot log in* — every student seeded before password auth has one,
+   and such an account must never authenticate without a password.
+
+8. **Login is not an enumeration oracle.** Unknown address, wrong password, and
+   an account with no password all return the same 401 with the same body, and
+   the no-such-student branch still runs a KDF so the timing matches. Failures
+   are throttled per email *and* per client address: per-address alone is
+   bypassed by anything distributed, per-email alone hands an attacker an
+   account-lockout button. They are counters with a TTL, not a lockout flag.
+
+9. **Login rotates the token.** Only the hash is stored, so the existing token
+   cannot be handed back. The old hash is evicted from the principal cache on
+   rotation — without that the previous token keeps working for the auth-cache
+   TTL. The consequence is one active session per student; multiple concurrent
+   sessions need a tokens table.
+
 ### Known gaps — deliberate, not oversights
 
 Registration is open to anyone naming a valid school (needs invites/SSO in
 front of it); bearer tokens assume TLS; tokens don't expire and there's no
-revocation endpoint; registration isn't rate-limited. These are documented in
+revocation endpoint. These are documented in
 the README's "What this is not". Don't quietly close one halfway — either do it
 properly or leave the honest note.
 
@@ -216,6 +235,21 @@ Batching is what makes a cross-tenant mix-up possible at all, so the pairing is
 checked rather than trusted. `load_corpus` refuses `school_id=None` for the same
 reason `current_student` refuses a null tenant.
 
+**The dashboard reads the constellation's entry, not one of its own.**
+`GET /api/students/me/dashboard` derives its four stats and its top-match list
+from the payload behind the broad `ExploreQuery` — the entry the constellation
+route writes and the nightly job warms — so the numbers are the map's own
+numbers and the two pages share one cache line. `topMatches` is deliberately not
+in the key: it slices a list the entry already holds in full, and folding it in
+would write a four-alumnus payload over the entry `/api/constellation` serves as
+the whole map. The saved-path count is read live for the opposite reason —
+saving a path changes it without touching the constellation.
+
+The third stat card is answered narrowly on purpose. "Clusters Explored" means
+clusters the student *visited*; that needs an activity log, and this service
+keeps none. Adding one is a feature with its own privacy questions, not a
+detail of a stats endpoint.
+
 **The response contains no geometry.** Radius, angle, and coordinates belong to
 the frontend; shipping them would freeze its layout model. A test asserts this.
 
@@ -283,6 +317,18 @@ is all registration ever collected; the frontend's signup form collects two.
 "Jane Watson") and lives in the view on purpose — the columns should land with
 the signup work, when there is finally something to put in them.
 
+**A cached read still touches Postgres for nothing.** The activity feed logs a
+*deliberate* exploration — one carrying a facet or a pivot query — and does it
+through `BackgroundTasks`, so the write runs after the response is written and
+opens its own session. A plain page load is not logged at all. Verified: five
+broad cache hits still issue 0 SQL statements. Don't turn that into a
+synchronous write, and don't log the broad query; a feed of four identical
+"Explored" lines is worse than no feed.
+
+**Activity labels are stored rendered, not reassembled.** The feed records what
+the student did *then* — rebuilding the sentence from today's data would have a
+renamed cluster or a deleted path quietly rewrite history.
+
 ## Changing the scoring formula
 
 Don't do it by inspection — run `python -m app.eval` before and after, and put
@@ -346,6 +392,10 @@ real ingested data in it. Don't write a test that truncates a table.
   build. Schools survive a reset on purpose — students created through the API
   reference them, and dropping a school cascades those accounts away.
 - **`.env` is the developer's local file.** Edit `.env.example` instead.
-- Migrations form a linear chain; the current head is `e9a4c1f27b30`.
+- Migrations form a linear chain; the current head is `a3e63e44ec16`.
+- **Autogenerate wants to drop the three GIN trigram indexes** every time.
+  They're real and in use (search depends on them) but can't be expressed in
+  model metadata, so they read as "removed". Delete those `drop_index` lines
+  from any autogenerated migration — `41399da8d240` has the note.
 - Compose maps Postgres to **5433** and Redis to **6380** to avoid colliding
   with local instances. The defaults in `config.py` match.

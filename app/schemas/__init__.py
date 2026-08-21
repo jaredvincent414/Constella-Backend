@@ -20,6 +20,11 @@ from app.schemas.constellation import (
     TransitionCourse,
     TransitionSemester,
 )
+from app.schemas.dashboard import (
+    DashboardMeta,
+    DashboardResponse,
+    DashboardStats,
+)
 from app.schemas.paths import (
     CombinedPath,
     CombineRequest,
@@ -31,8 +36,14 @@ from app.schemas.paths import (
     SavePathRequest,
     SourcePath,
 )
+from app.schemas.search import (
+    SearchResponse,
+    SearchResultOut,
+)
 from app.schemas.students import (
+    ActivityOut,
     CoursesUpdate,
+    LoginRequest,
     ProfileUpdate,
     RegisterRequest,
     RegisterResponse,
@@ -44,6 +55,8 @@ from app.schemas.students import (
 )
 
 __all__ = [
+    "ActivityOut",
+    "LoginRequest",
     "AlumnusDetail",
     "AlumnusOut",
     "CamelModel",
@@ -55,6 +68,9 @@ __all__ = [
     "ConstellationMeta",
     "ConstellationResponse",
     "CoursesUpdate",
+    "DashboardMeta",
+    "DashboardResponse",
+    "DashboardStats",
     "MatchReasonOut",
     "OutcomeOut",
     "PivotPointOut",
@@ -69,6 +85,8 @@ __all__ = [
     "SavedPathOut",
     "SchoolOut",
     "ScoreBreakdown",
+    "SearchResponse",
+    "SearchResultOut",
     "SimulationRequest",
     "TransitionCard",
     "TransitionCourse",

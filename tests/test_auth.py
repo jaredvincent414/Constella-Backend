@@ -11,7 +11,14 @@ import pytest
 from fastapi import HTTPException
 
 from app import cache
-from app.auth import _bearer, hash_token, new_token, require_admin
+from app.auth import (
+    _bearer,
+    hash_password,
+    hash_token,
+    new_token,
+    require_admin,
+    verify_password,
+)
 from app.config import settings
 from app.schemas import split_name
 
@@ -214,3 +221,39 @@ class TestSplitName:
 
     def test_surrounding_whitespace_is_trimmed(self):
         assert split_name("  Ada  Lovelace  ") == ("Ada", "Lovelace")
+
+
+class TestPasswordHashing:
+    """The password is never stored, and a stored hash is never a credential."""
+
+    def test_the_hash_does_not_contain_the_password(self):
+        assert "hunter2-and-then-some" not in hash_password("hunter2-and-then-some")
+
+    def test_verifies_the_right_password(self):
+        assert verify_password("hunter2-and-then-some", hash_password("hunter2-and-then-some"))
+
+    def test_rejects_the_wrong_password(self):
+        assert not verify_password("nope", hash_password("hunter2-and-then-some"))
+
+    def test_is_salted(self):
+        """Two people with the same password must not share a hash, or one
+        cracked password reveals everyone who reused it."""
+        assert hash_password("same-password-here") != hash_password("same-password-here")
+
+    def test_carries_its_algorithm_and_parameters(self):
+        """So argon2id can replace scrypt later without a flag day: verify
+        dispatches on the prefix and old hashes stay verifiable."""
+        assert hash_password("a-password-here").startswith("scrypt$16384$8$1$")
+
+    def test_a_missing_hash_never_verifies(self):
+        """Students created before password auth have none. Such an account must
+        be unable to log in, not able to log in without a password."""
+        assert not verify_password("anything", None)
+        assert not verify_password("anything", "")
+
+    def test_a_malformed_hash_fails_rather_than_raising(self):
+        for broken in ("garbage", "scrypt$notanumber$8$1$aa$bb", "bcrypt$1$2$3$aa$bb", "$$$$$"):
+            assert not verify_password("anything", broken)
+
+    def test_an_empty_password_never_verifies(self):
+        assert not verify_password("", hash_password("a-real-password"))

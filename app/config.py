@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # README still lists as missing. 0 disables the cache entirely.
     auth_cache_ttl_seconds: int = 60
 
+    # --- Login throttling -------------------------------------------------
+    # Counted per email and per client address; whichever trips first blocks.
+    # These are counters with a TTL, not a lockout flag, so a blocked identity
+    # frees itself — an attacker failing on someone's behalf costs them a wait,
+    # not their account.
+    login_max_failures: int = 10
+    login_failure_window_seconds: int = 900
+
     # Single-flight. On a miss, one caller computes and the rest wait for it
     # rather than all recomputing the same payload. The lock TTL bounds how long
     # a crashed holder can block others; the wait bounds how long a follower
@@ -55,6 +63,12 @@ class Settings(BaseSettings):
     # the same kernel as the scorer's pivot-query threshold, so "close enough"
     # means one thing in this codebase rather than two.
     facet_match_threshold: float = 0.3
+
+    # Collapse a burst of identical activity entries. Toggling a filter three
+    # times should leave one line in a four-item feed, not three; coming back
+    # tomorrow should still leave a new one.
+    activity_dedupe_seconds: int = 900
+    activity_feed_limit: int = 20
 
     constellation_min_alumni: int = 50
     constellation_max_alumni: int = 200

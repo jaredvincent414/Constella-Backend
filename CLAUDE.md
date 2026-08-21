@@ -23,7 +23,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest                                    # 302 tests
+pytest                                    # 366 tests
 pytest tests/test_api_security.py         # needs a migrated Postgres; skips without one
 ruff check app scripts tests              # line-length 100
 alembic revision --autogenerate -m "msg"
@@ -215,6 +215,21 @@ like `s`.
 Batching is what makes a cross-tenant mix-up possible at all, so the pairing is
 checked rather than trusted. `load_corpus` refuses `school_id=None` for the same
 reason `current_student` refuses a null tenant.
+
+**The dashboard reads the constellation's entry, not one of its own.**
+`GET /api/students/me/dashboard` derives its four stats and its top-match list
+from the payload behind the broad `ExploreQuery` — the entry the constellation
+route writes and the nightly job warms — so the numbers are the map's own
+numbers and the two pages share one cache line. `topMatches` is deliberately not
+in the key: it slices a list the entry already holds in full, and folding it in
+would write a four-alumnus payload over the entry `/api/constellation` serves as
+the whole map. The saved-path count is read live for the opposite reason —
+saving a path changes it without touching the constellation.
+
+The third stat card is answered narrowly on purpose. "Clusters Explored" means
+clusters the student *visited*; that needs an activity log, and this service
+keeps none. Adding one is a feature with its own privacy questions, not a
+detail of a stats endpoint.
 
 **The response contains no geometry.** Radius, angle, and coordinates belong to
 the frontend; shipping them would freeze its layout model. A test asserts this.

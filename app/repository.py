@@ -10,17 +10,22 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.models import (
+    MAJOR_ROLES,
     ActivityKind,
     Alumnus,
+    AlumnusCourse,
+    AlumnusMajor,
+    CareerOutcome,
     PrecomputeRun,
     ProgramRole,
+    Provenance,
     SavedPath,
     School,
     Student,
@@ -29,6 +34,7 @@ from app.models import (
     StudentProgram,
     StudentYear,
 )
+from app.search import SearchHit, cluster_hit, like_pattern, major_hit
 
 log = structlog.get_logger(__name__)
 
@@ -280,9 +286,142 @@ async def list_alumni_by_ids(
 
 
 async def count_alumni(session: AsyncSession) -> int:
-    from sqlalchemy import func
-
     return (await session.execute(select(func.count(Alumnus.id)))).scalar_one()
+
+
+# --------------------------------------------------------------------------
+# Search — GET /api/search
+# --------------------------------------------------------------------------
+#
+# Matching is `ILIKE '%q%'` ranked by pg_trgm's `similarity()`. Substring rather
+# than similarity alone because this is a typeahead: "bioch" has to reach
+# "Biochemistry", and a similarity threshold low enough to admit a five-character
+# prefix of a twelve-character name admits most of the corpus with it. The GIN
+# trigram indexes (`ix_alumnus_majors_name_trgm`, `ix_alumni_career_area_trgm`,
+# `ix_alumnus_courses_code_trgm`) serve the ILIKE; similarity() only orders what
+# survives it.
+
+
+def _require_school(school_id: str | None) -> str:
+    """Search has no offline caller, so it has no legitimate unscoped form.
+
+    `school_id=None` means *every school* to `list_alumni` — the fail-open
+    default the auth layer exists to keep off the request path. Here it is
+    simply a bug, and one that would leak another school's majors, clusters, and
+    course codes into a dropdown, so it raises rather than defaulting.
+    """
+    if not school_id:
+        raise ValueError("search must be scoped to a school")
+    return school_id
+
+
+async def search_majors(
+    session: AsyncSession, query: str, *, school_id: str, limit: int
+) -> list[SearchHit]:
+    """Majors held by this school's alumni, with how many hold each.
+
+    Restricted to the major roles: `alumnus_majors` also holds minors, and the
+    inferred ones are `provenance='derived'`. Offering an inferred minor as a
+    "major" would assert something the data doesn't say, and Explore's `?major=`
+    facet — the thing a row like this is for — matches majors either way.
+    """
+    scope = _require_school(school_id)
+    score = func.max(func.similarity(AlumnusMajor.name, query)).label("score")
+    holders = func.count(func.distinct(AlumnusMajor.alumnus_id)).label("holders")
+    stmt = (
+        select(AlumnusMajor.name, holders, score)
+        .join(Alumnus, Alumnus.id == AlumnusMajor.alumnus_id)
+        .where(
+            Alumnus.school_id == scope,
+            AlumnusMajor.role.in_(sorted(MAJOR_ROLES)),
+            AlumnusMajor.name.ilike(like_pattern(query)),
+        )
+        .group_by(AlumnusMajor.name)
+        .order_by(score.desc(), holders.desc(), AlumnusMajor.name)
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [major_hit(name, count, float(value)) for name, count, value in rows]
+
+
+async def search_career_clusters(
+    session: AsyncSession, query: str, *, school_id: str, limit: int
+) -> list[SearchHit]:
+    """Career clusters, matched on the label the constellation actually draws.
+
+    That label is `outcome_industry`: the alumnus's latest career outcome if
+    they have one, else the academic `career_area` stand-in. Resolving it here —
+    a lateral pick of the latest snapshot, mirroring `Alumnus.primary_outcome` —
+    is what makes the returned id equal to the cluster id on the map. Searching
+    `career_area` alone would use the trigram index but miss every cluster on a
+    corpus that has employment data, since that is exactly the case where the
+    two columns disagree.
+
+    The cost is that this one query filters on a computed label and so cannot
+    ride an index. It is bounded by the school's corpus rather than the whole
+    table, which is the same bound every other read on this path already has.
+    """
+    scope = _require_school(school_id)
+    latest = (
+        select(CareerOutcome.industry, CareerOutcome.provenance)
+        .where(CareerOutcome.alumnus_id == Alumnus.id)
+        .order_by(CareerOutcome.years_post_grad.desc(), CareerOutcome.id.desc())
+        .limit(1)
+        .lateral("latest_outcome")
+    )
+    label = func.coalesce(latest.c.industry, Alumnus.career_area)
+    members = func.count().label("members")
+    score = func.max(func.similarity(label, query)).label("score")
+    # Conservative on purpose: one synthetic member is enough to make the label
+    # not-reported, and under-labeling provenance is the failure that matters.
+    synthetic = func.bool_or(latest.c.provenance == Provenance.synthetic).label("synthetic")
+
+    stmt = (
+        select(label.label("label"), members, score, synthetic)
+        .select_from(Alumnus)
+        .outerjoin(latest, true())
+        .where(Alumnus.school_id == scope, label.ilike(like_pattern(query)))
+        .group_by(label)
+        .order_by(score.desc(), members.desc(), label)
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        cluster_hit(text, count, float(value), Provenance.synthetic.value if flag else None)
+        for text, count, value, flag in rows
+    ]
+
+
+async def search_alumni_by_course(
+    session: AsyncSession, query: str, *, school_id: str, limit: int
+) -> list[tuple[Alumnus, float]]:
+    """Alumni who took a course whose code matches, best match first.
+
+    Two steps rather than one join: the aggregate picks the ids and their score,
+    then the full objects come back through `list_alumni_by_ids`, which is
+    eager-loaded (the caller needs majors and courses to render a row) and
+    school-scoped a second time. The scope is already enforced above; repeating
+    it costs nothing and means no future edit to this query can widen it.
+    """
+    scope = _require_school(school_id)
+    score = func.max(func.similarity(AlumnusCourse.course_code, query)).label("score")
+    stmt = (
+        select(AlumnusCourse.alumnus_id, score)
+        .join(Alumnus, Alumnus.id == AlumnusCourse.alumnus_id)
+        .where(
+            Alumnus.school_id == scope,
+            AlumnusCourse.course_code.ilike(like_pattern(query)),
+        )
+        .group_by(AlumnusCourse.alumnus_id)
+        # Ties are the norm — everyone who took the course scores identically —
+        # so the id breaks them, or the same query pages differently each call.
+        .order_by(score.desc(), AlumnusCourse.alumnus_id)
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    scores = {alumnus_id: float(value) for alumnus_id, value in rows}
+    alumni = await list_alumni_by_ids(session, list(scores), school_id=scope)
+    return [(alumnus, scores[alumnus.id]) for alumnus in alumni]
 
 
 async def list_saved_paths(session: AsyncSession, student_id: str) -> list[SavedPath]:

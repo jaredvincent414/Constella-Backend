@@ -39,6 +39,13 @@ SCHOOL_A = "test-sec-school-a"
 SCHOOL_B = "test-sec-school-b"
 ALUM_A = "test-sec-alum-a"
 ALUM_B = "test-sec-alum-b"
+# School B's alumnus with vocabulary that appears nowhere else, so a search run
+# as School A either finds it or the tenant boundary has a hole.
+SEARCH_ALUM_B = "test-sec-search-alum-b"
+SEARCH_MAJOR_B = "Test Sec Xenobiology"
+SEARCH_AREA_B = "Test Sec Xenopolicy"
+SEARCH_COURSE_B = "XENO 999"
+SEARCH_TERM = "xeno"
 STUDENT_A = "test-sec-stu-a"
 STUDENT_B = "test-sec-stu-b"
 TOKEN_A = "test-sec-token-a"
@@ -75,7 +82,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
+def _alumnus(
+    alumnus_id: str,
+    school_id: str,
+    career_area: str,
+    major: str = "Biochemistry",
+    courses: list[tuple[str, str, int]] | None = None,
+) -> Alumnus:
     alumnus = Alumnus(
         id=alumnus_id,
         school_id=school_id,
@@ -86,10 +99,14 @@ def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
         interests=["Global Health Club"],
     )
     alumnus.courses = [
-        AlumnusCourse(course_code="BIO 101", course_name="Bio 101", semester_index=0),
-        AlumnusCourse(course_code="PH 201", course_name="Intro to Public Health", semester_index=3),
+        AlumnusCourse(course_code=code, course_name=name, semester_index=semester)
+        for code, name, semester in courses
+        or [
+            ("BIO 101", "Bio 101", 0),
+            ("PH 201", "Intro to Public Health", 3),
+        ]
     ]
-    alumnus.majors = [AlumnusMajor(name="Biochemistry", declared_semester=1, is_final=True)]
+    alumnus.majors = [AlumnusMajor(name=major, declared_semester=1, is_final=True)]
     alumnus.outcomes = [
         CareerOutcome(industry=career_area, occupation="Analyst", years_post_grad=1)
     ]
@@ -99,7 +116,9 @@ def _alumnus(alumnus_id: str, school_id: str, career_area: str) -> Alumnus:
 async def _cleanup() -> None:
     async with SessionLocal() as session:
         await session.execute(delete(Student).where(Student.id.in_([STUDENT_A, STUDENT_B])))
-        await session.execute(delete(Alumnus).where(Alumnus.id.in_([ALUM_A, ALUM_B])))
+        await session.execute(
+            delete(Alumnus).where(Alumnus.id.in_([ALUM_A, ALUM_B, SEARCH_ALUM_B]))
+        )
         # Any student registered through the API during a test.
         await session.execute(delete(Student).where(Student.school_id.in_([SCHOOL_A, SCHOOL_B])))
         await session.execute(delete(School).where(School.id.in_([SCHOOL_A, SCHOOL_B])))
@@ -132,6 +151,13 @@ async def seeded():
             [
                 _alumnus(ALUM_A, SCHOOL_A, "Health Policy"),
                 _alumnus(ALUM_B, SCHOOL_B, "Health Policy"),
+                _alumnus(
+                    SEARCH_ALUM_B,
+                    SCHOOL_B,
+                    SEARCH_AREA_B,
+                    major=SEARCH_MAJOR_B,
+                    courses=[(SEARCH_COURSE_B, "Xenobiology Seminar", 4)],
+                ),
             ]
         )
         student_a = Student(
@@ -191,6 +217,7 @@ def _alumni_ids(payload: dict) -> set[str]:
         ("get", "/api/constellation", None),
         ("get", f"/api/alumni/{ALUM_A}/timeline", None),
         ("post", "/api/simulate", {"toMajor": "Health Policy"}),
+        ("get", "/api/search?q=biology", None),
         ("get", "/api/paths", None),
         ("post", "/api/paths", {"alumnusId": ALUM_A}),
         ("post", "/api/paths/combine", {"pathIds": [1, 2]}),
@@ -198,6 +225,7 @@ def _alumni_ids(payload: dict) -> set[str]:
         ("get", "/api/students/me/activity", None),
         ("put", "/api/students/me", {"year": "junior"}),
         ("put", "/api/students/me/courses", {"courses": []}),
+        ("get", "/api/students/me/dashboard", None),
     ],
 )
 async def test_student_routes_require_a_token(client, seeded, method, path, body):
@@ -390,6 +418,74 @@ async def test_constellation_only_contains_your_school(client, seeded):
     assert response.status_code == 200
     alumni_ids = _alumni_ids(response.json())
     assert ALUM_B not in alumni_ids
+
+
+def _search(client, token: str, query: str):
+    return client.get("/api/search", params={"q": query}, headers=auth(token))
+
+
+async def test_search_never_crosses_the_school_boundary(client, seeded):
+    """The whole point of the typeahead is to name what exists. School B has an
+    alumnus whose major, career area, and course code appear nowhere in School
+    A's corpus; searching for them as A must come back empty, because a row here
+    would confirm the existence of records A is not allowed to read.
+
+    Run as B first: an empty result for A proves nothing if the term matches
+    nothing anywhere.
+    """
+    theirs = await _search(client, TOKEN_B, SEARCH_TERM)
+    assert theirs.status_code == 200
+    found = theirs.json()["results"]
+    assert {r["type"] for r in found} == {"major", "cluster", "alumnus"}
+    assert {r["label"] for r in found} >= {SEARCH_MAJOR_B, SEARCH_AREA_B}
+    assert SEARCH_ALUM_B in {r["id"] for r in found}
+
+    mine = await _search(client, TOKEN_A, SEARCH_TERM)
+    assert mine.status_code == 200
+    assert mine.json() == {"query": SEARCH_TERM, "results": [], "total": 0}
+
+
+async def test_search_alumni_rows_are_only_your_school(client, seeded):
+    """Both schools' alumni took BIO 101, so this is the case where a missing
+    `school_id` on the course query would silently return the other tenant's
+    ids — the same corpus boundary the constellation holds."""
+    response = await _search(client, TOKEN_A, "bio 101")
+    assert response.status_code == 200
+    ids = {r["id"] for r in response.json()["results"] if r["type"] == "alumnus"}
+    assert ids == {ALUM_A}
+
+
+async def test_search_labels_a_synthetic_career_outcome(client, seeded):
+    """The cluster label comes from seeded employment data on this corpus. It
+    reaches the UI here, so it has to carry the flag that says it is a
+    placeholder — the same rule the constellation node follows."""
+    response = await _search(client, TOKEN_B, SEARCH_TERM)
+    clusters = [r for r in response.json()["results"] if r["type"] == "cluster"]
+    assert [c["provenance"] for c in clusters] == ["synthetic"]
+async def test_dashboard_only_counts_your_school(client, seeded):
+    """The stats are a projection of the constellation, so they inherit its
+    boundary — but a projection is new code, and a boundary that holds only in
+    the route it was first written for is not a boundary."""
+    try:
+        await cache.invalidate_student(STUDENT_A)
+    except Exception:
+        pass  # Redis down — then the route computes inline, which is the point.
+
+    response = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_A))
+    assert response.status_code == 200
+    body = response.json()
+    assert {match["id"] for match in body["topMatches"]} == {ALUM_A}
+    assert body["stats"]["alumniMatches"] == 1
+
+
+async def test_dashboard_counts_only_your_own_saved_paths(client, seeded):
+    created = await client.post("/api/paths", json={"alumnusId": ALUM_A}, headers=auth(TOKEN_A))
+    assert created.status_code == 201
+
+    mine = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_A))
+    theirs = await client.get("/api/students/me/dashboard", headers=auth(TOKEN_B))
+    assert mine.json()["stats"]["savedPaths"] == 1
+    assert theirs.json()["stats"]["savedPaths"] == 0
 
 
 async def test_cannot_bookmark_another_schools_alumnus(client, seeded):

@@ -169,11 +169,53 @@ async def get_raw(key: str) -> bytes | None:
         return None
     return blob
 
-async def set_principal(token_hash: str, student_id: str, school_id: str, ttl: int) -> None:
-    """Remember a resolved token for `ttl` seconds.
 
 async def set_raw(key: str, blob: bytes, ttl: int | None = None) -> None:
     await get_client().set(key, blob, ex=ttl if ttl is not None else settings.cache_ttl_seconds)
+
+
+def principal_key(token_hash: str) -> str:
+    """Keyed by the token's SHA-256, never by the token itself.
+
+    The plaintext token is a credential and does not belong in a second store.
+    The hash is what the database holds, and keying on it here means a Redis
+    dump discloses exactly what a database dump already would.
+    """
+    return f"constella:{CACHE_VERSION}:auth:{token_hash}"
+
+
+async def get_principal(token_hash: str) -> tuple[str, str] | None:
+    """A cached `(student_id, school_id)` for this token, if there is one."""
+    blob = await get_client().get(principal_key(token_hash))
+    if blob is None:
+        return None
+    try:
+        student_id, _, school_id = blob.decode().partition("\x1f")
+    except UnicodeDecodeError:
+        return None
+    # A tenantless principal must never come back from cache — see
+    # `set_principal`, which refuses to store one.
+    if not student_id or not school_id:
+        return None
+    return student_id, school_id
+
+
+async def set_principal(token_hash: str, student_id: str, school_id: str, ttl: int) -> None:
+    """Remember a resolved token for `ttl` seconds.
+
+    Refuses a null tenant. `school_id=None` means *unscoped* everywhere
+    downstream, so a cached principal without one would be the fail-open case
+    `current_student` exists to prevent — with a TTL attached.
+    """
+    if not student_id or not school_id or ttl <= 0:
+        return
+    await get_client().set(
+        principal_key(token_hash), f"{student_id}\x1f{school_id}".encode(), ex=ttl
+    )
+
+
+async def forget_principal(token_hash: str) -> None:
+    await get_client().delete(principal_key(token_hash))
 
 
 async def track_student_key(student_id: str, key: str, params: dict | None = None) -> None:

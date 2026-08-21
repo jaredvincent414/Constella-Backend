@@ -16,7 +16,27 @@ class Settings(BaseSettings):
     # refreshes them, so the cache is cold for most of the day and nearly every
     # request pays a full inline recompute. 30h leaves headroom over a daily job
     # — raise it if the job runs less often than that.
+    # --- Database pool -----------------------------------------------------
+    # `pool_pre_ping` issues a SELECT 1 before handing out any connection, which
+    # measured at ~0.7ms on *every* request that touches Postgres. `pool_recycle`
+    # covers the common case it guards — a connection idled out by the server —
+    # without a per-request round trip. Turn pre-ping back on behind a proxy or
+    # a failover pair, where connections can drop unannounced mid-pool.
+    db_pool_pre_ping: bool = False
+    db_pool_recycle_seconds: int = 1800
+    # SQLAlchemy's defaults are 5 + 10. An inline cache miss can hold a
+    # connection for the length of a corpus load, so the pool has to be wider
+    # than the number of requests you expect to be missing at once.
+    db_pool_size: int = 20
+    db_max_overflow: int = 10
+
     cache_ttl_seconds: int = 108_000
+
+    # How long a resolved bearer token stays cached. This is the window in which
+    # a deleted student could still authenticate, so it is deliberately short —
+    # short enough that it never substitutes for the revocation endpoint the
+    # README still lists as missing. 0 disables the cache entirely.
+    auth_cache_ttl_seconds: int = 60
 
     # Single-flight. On a miss, one caller computes and the rest wait for it
     # rather than all recomputing the same payload. The lock TTL bounds how long

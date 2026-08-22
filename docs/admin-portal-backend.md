@@ -212,7 +212,7 @@ Extract parsing functions as importable utilities (not just class methods) so th
 
 Pivot detection: walk programs chronologically; when primary major CIP changes between sessions, emit `PivotRecord`.
 
-Career outcomes: PESC has no employment data. Use degree CIP family as `career_area` with `provenance='synthetic'`. Real career data comes Phase 3.
+Career outcomes: PESC has no employment data. Use degree CIP family as `career_area` with `provenance='synthetic'`. Real career data comes Phase 3. The admin dashboard's overview endpoint surfaces this explicitly — completeness stats show `% with career outcomes (non-synthetic)` so schools see the gap clearly, not buried in a provenance tag. The student-facing constellation also labels these outcomes as inferred per the existing provenance-labeling convention (see CLAUDE.md).
 
 Also yields `IngestAuditEntry` data alongside each `AlumnusRecord` for the transparency layer.
 

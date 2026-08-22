@@ -495,7 +495,7 @@ app/
 scripts/
   seed.py            Synthetic corpus generator (fixed RNG seed)
   seed_outcomes.py   Synthetic employment outcomes (the clustering axis)
-tests/               395 tests; only the security suite needs Postgres
+tests/               399 tests; only the security suite needs Postgres
 ```
 
 The matching engine takes plain ORM objects and never touches a session, so

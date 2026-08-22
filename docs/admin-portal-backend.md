@@ -240,7 +240,14 @@ Reuses the existing token-hash auth pattern — no new auth scheme, no new depen
 **Machine-to-machine** (per-school token auth):
 
 `POST /api/ingest/pesc/{school_slug}`
-- Validates per-school token from `SchoolConfig.pesc_endpoint_token` (constant-time compare)
+
+> **Security note:** This endpoint lives under `/api/ingest/`, not `/api/admin/`,
+> and is a deliberate exception to the admin-gate pattern (CLAUDE.md invariant #5).
+> It authenticates via a per-school bearer token, not the `ADMIN_API_KEY`, because
+> it is called by the school's SIS — a machine, not an admin user. The per-school
+> token is stored as a SHA-256 hash in `SchoolConfig.pesc_endpoint_token` and
+> validated with constant-time compare.
+
 - Creates `SyncJob` (status=pending)
 - Launches background task: parse with `PescAdapter`, load with `load_incremental()`, generate `IngestAuditEntry` rows, update `SyncJob`, trigger `recompute` for affected school
 - Returns `202 Accepted` with `{sync_id, status}`

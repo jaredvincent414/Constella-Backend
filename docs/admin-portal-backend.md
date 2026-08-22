@@ -227,9 +227,12 @@ Add `load_incremental(adapter, session, school_id) -> LoadStats`:
 
 ### 4. Admin Auth — `app/auth.py`
 
-- Reuse existing `hash_password()`/`verify_password()` for AdminUser
-- Add JWT encode/decode (`PyJWT` — single new dependency)
-- Add `current_admin_user` FastAPI dependency: validates JWT from Authorization header, returns AdminUser
+Reuses the existing token-hash auth pattern — no new auth scheme, no new dependency.
+
+- Reuse existing `hash_password()`/`verify_password()` for AdminUser password login
+- AdminUser login returns a bearer token; only the SHA-256 hash is stored (same as student tokens, per security invariant #4)
+- Add `current_admin_user` FastAPI dependency: resolves bearer token → AdminUser via hash lookup, same pattern as `current_student`
+- No JWT — this is a single service hitting its own Postgres; stateless verification buys nothing and adds secret-key management overhead
 - Initial admin creation via CLI: `python -m app.admin create-admin --email X --school Y`
 
 ### 5. PESC Receive Endpoint — `app/api/routes/admin_portal.py`
@@ -274,8 +277,7 @@ All require `current_admin_user` JWT auth:
 ### 7. Integration Points
 
 - Include router in `app/main.py`
-- Add to `app/config.py`: `jwt_secret_key`, `jwt_expiry_minutes`
-- Add `PyJWT` to requirements
+- Add to `app/config.py`: `alumni_hmac_secret` (required, no default)
 
 ---
 

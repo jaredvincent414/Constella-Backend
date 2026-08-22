@@ -306,6 +306,49 @@ All require `current_admin_user` bearer-token auth:
 
 ---
 
+## Production Readiness Roadmap
+
+These are known architectural gaps that the current design defers. Each is scoped and sequenced so they can be addressed incrementally without blocking the core pipeline.
+
+### Diff-based upsert (replaces delete-cascade re-insert)
+
+The incremental loader currently deletes an existing alumnus (cascading to courses, majors, pivots, milestones, career outcomes) and re-inserts on re-sync. This is expensive for large corpora and breaks any foreign keys pointing inward (saved paths, activity log entries referencing alumni).
+
+**Target design:** Merge on `anonymous_id`. For each child table, diff incoming records against existing rows — insert new, update changed, delete removed. This preserves FK integrity and reduces write amplification from O(all children) to O(changed children). The upsert must be idempotent: running the same payload twice produces zero writes on the second pass.
+
+**Why it's deferred:** Correct child-diffing touches every child table's comparison logic and needs integration tests against real PESC payloads to verify no silent data loss. Shipping the pipeline with delete-cascade first lets us validate the full parse → load → recompute flow, then swap the loader strategy with confidence.
+
+### Task queue for ingestion (replaces BackgroundTasks)
+
+Starlette `BackgroundTasks` run in-process after the response. A large PESC payload (1,500+ transcripts) creates a long-running task that dies silently if the worker restarts, leaving `SyncJob` stuck at `running` permanently.
+
+**Target design:** A Postgres-backed job table with a lightweight worker loop (or `arq` with Redis). Jobs are claimed with `SELECT ... FOR UPDATE SKIP LOCKED`, which gives exactly-once delivery without a separate broker. Failed jobs are retried with exponential backoff. A `SyncJob` stuck in `running` for longer than `max_duration` is automatically marked `failed` by a periodic sweeper.
+
+**Why it's deferred:** The task queue is infrastructure — it needs deployment configuration (worker process in Render/Fly), health checks, and graceful shutdown. The current `BackgroundTasks` path works correctly for payloads under ~500 records and lets us validate the pipeline end-to-end first.
+
+### Audit entry retention and volume management
+
+`IngestAuditEntry` creates one row per alumni record per sync. A school with 5,000 alumni syncing quarterly generates 20,000 rows/year with array columns. Without retention, this grows unbounded.
+
+**Target design:** Time-partitioned table (`audit_entries_2026_q3`) with automatic partition creation. Retention policy configurable per school in `SchoolConfig` (default: 12 months). Expired partitions are detached and dropped by a scheduled job. Summary statistics are aggregated into `SyncJob` before partition drop so historical reporting survives.
+
+**Why it's deferred:** Partitioning requires schema-level decisions (partition key, interval) that are better informed by real usage patterns. The initial deployment will have low volume; retention becomes critical at scale.
+
+### XML validation and upload guardrails
+
+The PESC receive endpoint accepts raw XML with no size limit, no schema validation, and no protection against malformed input beyond Python's `iterparse` raising on bad XML.
+
+**Target design:**
+- **Max upload size:** 50 MB (configurable), enforced at the ASGI layer before parsing begins
+- **Content-Type validation:** Reject anything that isn't `application/xml` or `text/xml`
+- **PESC XSD validation:** Validate the root element and namespace against the PESC College Transcript schema before entering the extraction zone — reject structurally invalid documents early with a clear error in `SyncJob.error_detail`
+- **Streaming depth limit:** Cap element nesting depth during `iterparse` to prevent XML bomb attacks (billion laughs)
+- **Entity expansion disabled:** `defusedxml.ElementTree` replaces stdlib `xml.etree` to block XXE and entity expansion attacks
+
+**Why it's deferred:** XSD validation requires sourcing the official PESC schema and testing against real institutional exports, which vary in conformance. The current streaming parser handles well-formed XML safely; these guardrails harden it for adversarial input.
+
+---
+
 ## Verification
 
 1. Parse sample PESC XML → verify no PII in AlumnusRecord output, stable anonymous IDs

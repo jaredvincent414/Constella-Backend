@@ -16,6 +16,7 @@ from app.api.routes import (
     constellation,
     dashboard,
     health,
+    insights,
     paths,
     search,
     simulate,
@@ -90,6 +91,7 @@ app.include_router(alumni.router)
 app.include_router(search.router)
 app.include_router(simulate.router)
 app.include_router(paths.router)
+app.include_router(insights.router)
 app.include_router(admin.router)
 
 

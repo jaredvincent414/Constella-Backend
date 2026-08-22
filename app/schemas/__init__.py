@@ -36,6 +36,12 @@ from app.schemas.paths import (
     SavePathRequest,
     SourcePath,
 )
+from app.schemas.insights import (
+    CourseSignalOut,
+    InsightsResponse,
+    OutcomeBreakdownOut,
+    TransitionPatternOut,
+)
 from app.schemas.search import (
     SearchResponse,
     SearchResultOut,
@@ -67,11 +73,14 @@ __all__ = [
     "CombinedPath",
     "ConstellationMeta",
     "ConstellationResponse",
+    "CourseSignalOut",
     "CoursesUpdate",
     "DashboardMeta",
     "DashboardResponse",
     "DashboardStats",
+    "InsightsResponse",
     "MatchReasonOut",
+    "OutcomeBreakdownOut",
     "OutcomeOut",
     "PivotPointOut",
     "ProfileUpdate",
@@ -90,6 +99,7 @@ __all__ = [
     "SimulationRequest",
     "TransitionCard",
     "TransitionCourse",
+    "TransitionPatternOut",
     "TransitionSemester",
     "SimulationResponse",
     "SourcePath",

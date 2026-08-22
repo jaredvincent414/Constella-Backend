@@ -332,18 +332,20 @@ def generate_alumnus(rng: random.Random, index: int, school_id: str) -> Alumnus:
             add(f"{code}-D", name, pivots_at, dropped=True)
 
     # --- majors -----------------------------------------------------------
-    alumnus.majors.append(
-        AlumnusMajor(name=origin_major, declared_semester=1, is_final=pivots_at is None)
+    origin_entry = AlumnusMajor(
+        name=origin_major, declared_semester=1, is_final=pivots_at is None
     )
+    alumnus.majors.append(origin_entry)
     if pivots_at is not None:
         alumnus.majors.append(
             AlumnusMajor(name=final_major, declared_semester=pivots_at, is_final=True)
         )
-        # ~25% keep the original as a double major rather than dropping it.
+        # ~25% keep the original as a double major rather than dropping it —
+        # which is the row above marked final, not a second one. is_final is not
+        # part of ix_alumnus_majors_unique (alumnus_id, declared_semester, name,
+        # role), so appending a second entry collides with the first.
         if rng.random() < 0.25:
-            alumnus.majors.append(
-                AlumnusMajor(name=origin_major, declared_semester=1, is_final=True)
-            )
+            origin_entry.is_final = True
 
     # --- milestones -------------------------------------------------------
     alumnus.milestones.append(Milestone(semester_index=5, text=f"Internship: {org}"))

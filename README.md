@@ -137,7 +137,12 @@ Admin users are school-scoped — an admin sees only their own school's data.
 
 ## Key features
 
-**What-If Simulator** — "What if I switched from Biology to Computer Science?"
+**Explore** — the constellation map. Alumni matched by coursework overlap,
+major alignment, and pivot timing, clustered by career outcome. Filterable by
+interests, career area, and major. Typeahead search across majors, clusters,
+and alumni backed by GIN trigram indexes.
+
+**Transition** — "What if I switched from Biology to Computer Science?"
 Returns every alumnus who made that transition: when they pivoted, what courses
 they took around the pivot, and where they ended up. Aggregate stats
 (`peakTiming`, `topOutcome`) are computed over the full match set, not just the
@@ -145,13 +150,8 @@ displayed cards.
 
 **Create Path** — bookmark alumni journeys, then merge 2+ into one plan.
 Courses are ranked by cross-path frequency (consensus) and capped per stage.
-Returns a pre-computed Sankey the frontend draws directly.
-
-**Search** — typeahead across majors, clusters, and alumni. Backed by GIN
-trigram indexes, scoped to the caller's school.
-
-**Match rationales** — derived from the same score components that produced the
-ranking, never narrated by a model. A rationale that disagrees with the
+Match rationales are derived from the same score components that produced the
+ranking, never narrated by a model — a rationale that disagrees with the
 ordering is worse than none.
 
 ## Security

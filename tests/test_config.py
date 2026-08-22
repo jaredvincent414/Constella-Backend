@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from app.config import Settings
+from app.main import _dependency_host
 
 
 class TestDatabaseUrlDriver:
@@ -47,3 +48,30 @@ class TestDatabaseUrlDriver:
         assert Settings(database_url="sqlite+aiosqlite:///x.db").database_url == (
             "sqlite+aiosqlite:///x.db"
         )
+
+
+class TestDependencyHostLogging:
+    """The startup line names what the process will dial.
+
+    Without it, an unset DATABASE_URL falls back to a localhost default that is
+    correct under `docker compose` and wrong everywhere else, and the only
+    symptom is every corpus route returning 500 — which points at the
+    application rather than at its configuration.
+    """
+
+    def test_strips_credentials(self):
+        """A log line is the easiest place in a system to leak a password."""
+        host = _dependency_host("postgresql+asyncpg://user:s3cret@db.internal:5432/constella")
+        assert host == "db.internal:5432"
+        assert "s3cret" not in host
+        assert "user" not in host
+
+    def test_handles_a_passwordless_url(self):
+        assert _dependency_host("redis://red-abc:6379/0") == "red-abc:6379"
+
+    def test_handles_a_redis_url_with_only_a_password(self):
+        assert _dependency_host("redis://:pw@red-abc:6379/0") == "red-abc:6379"
+
+    def test_surfaces_the_localhost_default(self):
+        """The whole point: this is what a misconfigured deployment prints."""
+        assert _dependency_host(Settings().database_url) == "localhost:5433"

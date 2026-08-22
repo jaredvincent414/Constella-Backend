@@ -65,8 +65,39 @@ mean of member scores, capped at 10 clusters.
 
 ## School data integration
 
-Schools connect their alumni data through standard higher-ed infrastructure —
-no CSV uploads, no manual entry.
+Constella needs two things no single office has together: **transcripts**
+(what courses alumni took, when they changed direction) and **career outcomes**
+(where they actually ended up). Registrars and the National Student
+Clearinghouse have the first. Career centers have the second. Connecting both
+is what makes the constellation answer "people like you went *here*" instead of
+just "people like you took *these courses*."
+
+Without career data, clustering groups alumni by degree field — two Biology
+grads land together whether one went into pharma and the other into finance.
+With it, clustering reflects real destinations, the eval harness measures
+against actual outcomes instead of academic proxies, and match rationales can
+reference where someone ended up (currently forbidden because outcomes are
+synthetic).
+
+### Two data sources, one pipeline
+
+```
+REGISTRAR / NSC                       CAREER CENTER
+  Transcripts (PESC XML)                Employment + survey data
+  courses, majors, pivots,              job title, employer, industry,
+  graduation dates                      skills, interests
+          |                                      |
+          v                                      v
+  ┌─────────────────────────────────────────────────────┐
+  │              SOURCE ADAPTER PROTOCOL                 │
+  │  Each source yields the same neutral records.        │
+  │  The scorer, clustering, and API never learn          │
+  │  which source produced them.                         │
+  └──────────────────────┬──────────────────────────────┘
+                         |
+                         v
+              Postgres --> Job --> Redis --> API
+```
 
 ### Privacy pipeline
 
@@ -109,18 +140,18 @@ PERSISTENCE BOUNDARY
 | Session dates | `semester_index` (0-7) | Timeline construction |
 | Award dates | `graduation_year` | Cohort filtering |
 
-### Integration modes
+### Integration phases
 
-**Phase 1 — PESC push.** Schools push College Transcript XML to a per-school
-authenticated endpoint. The adapter maps PESC fields to Constella's
-source-neutral records; the loader, scorer, and API work unchanged.
+**Phase 1 — Transcript ingestion (NSC/PESC).** Schools push College Transcript
+XML to a per-school authenticated endpoint, or authorize Constella to pull from
+NSC directly. The adapter maps standard fields to Constella's source-neutral
+records; the loader, scorer, and API work unchanged.
 
-**Phase 2 — NSC pull.** Schools authorize Constella as a data recipient in
-NSC's system. The adapter authenticates with NSC and pulls via ETX or NextGen,
-reusing the same PESC parsing utilities.
-
-**Phase 3 — Career outcomes.** Schools push employment and career survey data,
-replacing synthetic outcomes with `provenance='reported'`.
+**Phase 2 — Career outcome ingestion.** Career centers push employment and
+survey data. This is what activates real clustering, unlocks the 10% interest
+weight (career centers track skills), and flips provenance from `synthetic` to
+`reported` — the point where the constellation goes from "similar academic
+paths" to "similar paths *and* real destinations."
 
 ### Admin portal
 

@@ -352,9 +352,14 @@ rolling back by redeploying an older image impossible.
 
 ```bash
 alembic upgrade head                                  # release step
-python -m app.ingest --source midfield --alumni 1500  # once; the DB starts empty
+python -m scripts.seed --alumni 240                   # once; the DB starts empty
 python -m app.jobs.recompute                          # warm the cache, then daily
 ```
+
+Seed rather than ingest: `app.ingest` reads from `DATA_PATH`, a directory of
+MIDFIELD files that ships with neither the repo nor the image, so on a deployed
+instance there is nothing for it to read. Point `DATA_PATH` at mounted data if
+you want the real corpus there.
 
 `CORS_ORIGINS` must be the frontend's exact origin, scheme included. Managed
 providers hand out `postgres://` URLs, which select a synchronous driver this

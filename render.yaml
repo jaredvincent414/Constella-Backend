@@ -6,11 +6,13 @@
 # Two things this file cannot do for you, both one-offs after the first deploy:
 #
 #   1. Load a corpus. The database comes up empty, and an empty corpus renders
-#      as a blank constellation rather than an error:
-#          python -m app.ingest --source midfield --alumni 1500
-#      That needs the MIDFIELD files, which are not in this repo — run it from a
-#      shell with the data mounted, or seed synthetic data instead:
+#      as a blank constellation rather than an error — which reads as a frontend
+#      bug, not a missing step:
 #          python -m scripts.seed --alumni 240
+#      Use the seed script, not `app.ingest`. Ingest reads from DATA_PATH, which
+#      points at a directory of MIDFIELD files that are not in this repo and not
+#      in the image; on a deployed instance there is nothing for it to read. The
+#      seed generates its corpus, so it needs no files at all.
 #
 #   2. Warm the cache the first time:
 #          python -m app.jobs.recompute

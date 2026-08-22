@@ -86,10 +86,14 @@ OUTCOMES: dict[str, list[tuple[str, str]]] = {
         ("Marketing & Advertising", "Creative Director"),
         ("Technology", "UX Designer"),
     ],
+    # The one key both corpora share — "Education" is a CIP family *and* a
+    # DOMAINS label. Kept homogeneous so it behaves like the domain entries
+    # below: a third of these alumni previously landed in Nonprofit, which split
+    # the Education cluster in the synthetic corpus.
     "Education": [
         ("Education", "Teacher"),
         ("Education", "Curriculum Designer"),
-        ("Nonprofit", "Program Manager"),
+        ("Education", "Program Manager"),
     ],
     "Natural Resources & Conservation": [
         ("Energy", "Environmental Analyst"),
@@ -155,6 +159,60 @@ OUTCOMES: dict[str, list[tuple[str, str]]] = {
         ("Government & Public Policy", "Public Administrator"),
         ("Nonprofit", "Social Worker"),
         ("Government & Public Policy", "Program Analyst"),
+    ],
+    # --- scripts/seed.py corpus -------------------------------------------
+    # The synthetic corpus keys `career_area` on DOMAINS labels, not CIP
+    # families, so without these every seeded alumnus falls through to
+    # DEFAULT_OUTCOMES — three generic industries covering 93% of the corpus.
+    # That matters because `outcome_industry` prefers a CareerOutcome's industry
+    # over `career_area`, so seeding outcomes would *replace* the clustering axis
+    # with a flatter one. Industry mirrors the label here to keep the cluster set
+    # identical either way; what these rows actually add is the occupation,
+    # region, years, and the `synthetic` provenance the UI has to surface.
+    "Health Policy": [
+        ("Health Policy", "Health Policy Analyst"),
+        ("Health Policy", "Program Manager"),
+        ("Health Policy", "Health Economist"),
+    ],
+    "Biotech": [
+        ("Biotech", "Research Associate"),
+        ("Biotech", "Process Scientist"),
+        ("Biotech", "Bioinformatics Analyst"),
+    ],
+    "UX Research": [
+        ("UX Research", "UX Researcher"),
+        ("UX Research", "Design Researcher"),
+        ("UX Research", "Product Designer"),
+    ],
+    "Software Engineering": [
+        ("Software Engineering", "Software Engineer"),
+        ("Software Engineering", "Backend Engineer"),
+        ("Software Engineering", "Platform Engineer"),
+    ],
+    "Data Science": [
+        ("Data Science", "Data Scientist"),
+        ("Data Science", "Machine Learning Engineer"),
+        ("Data Science", "Data Analyst"),
+    ],
+    "Finance": [
+        ("Finance", "Financial Analyst"),
+        ("Finance", "Investment Analyst"),
+        ("Finance", "Quantitative Analyst"),
+    ],
+    "Environmental Policy": [
+        ("Environmental Policy", "Environmental Analyst"),
+        ("Environmental Policy", "Sustainability Coordinator"),
+        ("Environmental Policy", "Conservation Policy Advisor"),
+    ],
+    "Product Management": [
+        ("Product Management", "Product Manager"),
+        ("Product Management", "Technical Program Manager"),
+        ("Product Management", "Product Operations Lead"),
+    ],
+    "Journalism": [
+        ("Journalism", "Reporter"),
+        ("Journalism", "Editor"),
+        ("Journalism", "Content Producer"),
     ],
 }
 

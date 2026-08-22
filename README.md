@@ -1,8 +1,40 @@
 # Constella — Backend
 
-Cohort Matching Engine for the constellation map. Scores alumni against a
-student's transcript, clusters them by career outcome, and serves the payload
-the frontend renders.
+Finds people who already graduated from a student's school, works out which of
+them started where that student is standing now, and shows what they did next.
+The frontend draws it as a star map — each point a former graduate, clustered by
+where people ended up.
+
+| The student asks | The app shows |
+|---|---|
+| *Who took the classes I'm taking?* | Graduates ranked by early-coursework overlap |
+| *What if I switched Economics → Public Health?* | Everyone who made that switch, when, and what they took |
+| *What would my next two years look like?* | Real paths merged into one plan |
+
+**This is the engine, not the website** — the star map is a separate project.
+
+## Read before demoing
+
+* **The career outcomes are invented.** The transcripts are real (~1,200
+  anonymised records from a research dataset), but that dataset has no
+  employment data at all, so every job title was generated. It ships tagged
+  `synthetic`; never show it as a real person's career.
+* **Matching is ~1.4x better than chance**, measured — a real signal, not a
+  solved problem. See [Matching quality](#matching-quality-offline-eval).
+* **Anyone can sign up.** No invites, no university login. Demo-only.
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **Alumnus / alumni** | Someone who already graduated — who students get matched against |
+| **Corpus** | All alumni records for one school |
+| **Pivot** | The point someone changed direction — switched or added a major |
+| **Cluster** | A group who ended up in the same field; one constellation |
+| **Similarity score** | 0–100, how closely one alumnus's path resembles the student's |
+| **Cache** | A kept copy of an already-computed answer — ~130x faster than recomputing |
+| **Tenant / school scoping** | A student only ever sees their own school's alumni |
+| **Migration** | A versioned change to the database structure |
 
 ## Quickstart
 
@@ -16,7 +48,8 @@ python -m scripts.seed --alumni 240 --reset
 uvicorn app.main:app --reload --port 8000
 ```
 
-Interactive API docs at http://localhost:8000/docs.
+Then open **http://localhost:8000/docs** — every endpoint, clickable, no code
+required.
 
 Seeded students: `student-demo` (sophomore, Biochemistry → Health Policy),
 `student-undeclared` (freshman, thin transcript), `student-junior-cs`
@@ -27,7 +60,11 @@ student-facing route needs one, see [Auth & multi-tenancy](#auth--multi-tenancy)
 Instead of the synthetic seed, you can load real practice data from MIDFIELD —
 see [Data ingestion](#data-ingestion).
 
-## Architecture
+## How it works
+
+The expensive part — scoring one student against every alumnus — runs overnight,
+so loading a map reads a prepared answer rather than starting a calculation:
+~5ms instead of ~600ms.
 
 ```
 PostgreSQL (raw alumni + student data)
@@ -90,6 +127,15 @@ loader, models, scorer, clustering, cache, and API are unchanged. Full mapping
 table, caveats, and checklist in [app/ingest/README.md](app/ingest/README.md).
 
 ## Scoring
+
+Half the score is shared coursework — counting only classes taken *before* that
+alumnus changed direction, since what they studied afterwards says little about
+someone standing at the fork. A fifth is timing (a second-year switch matters
+more to a second-year student), a fifth is majors at both ends, a tenth is
+interests as a tiebreaker.
+
+Filters decide *who is eligible*; this formula only ranks the survivors — so a
+strong course overlap can't outvote someone explicitly asking for Health Policy.
 
 | Factor | Weight | Implementation |
 |---|---|---|
@@ -293,6 +339,11 @@ would confirm the existence of records the caller cannot read.
 
 ## Auth & multi-tenancy
 
+Two rules: a request is always about whoever sent it, and a student only sees
+their own school's alumni — another school's record reports as missing rather
+than forbidden, since "forbidden" confirms it exists. Passwords are stored only
+as an irreversible hash, and a failed sign-in reveals nothing.
+
 Every student-facing route resolves its subject from an opaque bearer token, and
 alumni reads are scoped to the caller's school.
 
@@ -367,6 +418,9 @@ app doesn't install — `Settings._require_async_driver` rewrites the scheme, so
 the provider's URL can be wired straight through.
 
 ## API
+
+**Auth: student** means the request carries the caller's token and answers only
+about them, from their own school — no route accepts anyone else's identifier.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|

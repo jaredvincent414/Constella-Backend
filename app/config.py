@@ -119,7 +119,7 @@ class Settings(BaseSettings):
 
     # Comma-separated rather than a list field: pydantic-settings tries to
     # JSON-decode complex types from env vars, which makes plain CSV fail.
-    cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://constella-view.vercel.app"
 
     log_level: str = "INFO"
 

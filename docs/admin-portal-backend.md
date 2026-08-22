@@ -124,7 +124,7 @@ def anonymous_id(school_id: str, first_name: str, last_name: str, birth_date: st
 
 ---
 
-## Phase 1: PESC Push + Admin Infrastructure
+## Phase 1a: PESC Ingestion Pipeline
 
 ### 1. New ORM Models — `app/models/admin.py`
 
@@ -252,9 +252,11 @@ Reuses the existing token-hash auth pattern — no new auth scheme, no new depen
 - Launches background task: parse with `PescAdapter`, load with `load_incremental()`, generate `IngestAuditEntry` rows, update `SyncJob`, trigger `recompute` for affected school
 - Returns `202 Accepted` with `{sync_id, status}`
 
+## Phase 1b: Admin Dashboard API
+
 ### 6. Admin API Endpoints — `app/api/routes/admin_portal.py`
 
-All require `current_admin_user` JWT auth:
+All require `current_admin_user` bearer-token auth:
 
 **School config**:
 - `GET /api/admin-portal/school` — integration mode, endpoint URL, last sync time
